@@ -9,7 +9,7 @@ A simple, privacy-conscious reminder system that works via Telegram.
 - Management commands (/list, /cancel, /delay)
 
 **Architecture:**
-- Designed for easy migration from cloud (Oracle) to home (Raspberry Pi)
+- Designed for easy migration from cloud (Google Cloud) to home (Raspberry Pi)
 - LLM provider is swappable: Gemini (free cloud) → Ollama (local/private)
 
 ---
@@ -49,72 +49,75 @@ You'll need your Telegram user ID to authorize yourself. Here's how to find it:
 5. Copy the key (looks like `AIzaSy...`)
 6. **Save this key** - you'll need it later
 
-### Step 4: Set Up Oracle Cloud (30-45 minutes)
+### Step 4: Set Up Google Cloud (30-45 minutes)
 
 This gives you a free server that runs 24/7.
 
-#### 4a. Create an Oracle Cloud Account
+#### 4a. Create a Google Cloud Account
 
-1. Go to [oracle.com/cloud/free](https://www.oracle.com/cloud/free/)
-2. Click **"Start for free"**
-3. Fill in your details
-4. You'll need a credit card for verification (you won't be charged)
-5. **Important:** Choose a home region close to you (this cannot be changed later)
-6. Wait for email confirmation
+1. Go to [cloud.google.com/free](https://cloud.google.com/free)
+2. Click **"Get started for free"**
+3. Sign in with your Google account
+4. You'll need a credit card for verification (you won't be charged for Always Free resources)
+5. Complete the signup process
 
-> **Troubleshooting:** If signup is rejected, try a different card or contact Oracle support. As a backup, you can use Hetzner (~€4/month) instead.
+> **Note:** Google gives you $300 free credit for 90 days, but we'll use the "Always Free" tier which is free forever.
 
 #### 4b. Create a Virtual Machine
 
-1. Log into [Oracle Cloud Console](https://cloud.oracle.com)
-2. Click the hamburger menu (☰) → **Compute** → **Instances**
-3. Click **"Create Instance"**
-4. Configure:
-   - **Name:** `reminder-bot` (or anything you like)
-   - **Image:** Oracle Linux 8 (default is fine)
-   - **Shape:** VM.Standard.E2.1.Micro (this is the "Always Free" option)
-5. Under **"Add SSH keys"**:
-   - If you don't have SSH keys: Select "Generate a key pair for me" and **download both keys**
-   - If you have SSH keys: Upload your public key
-6. Click **"Create"**
-7. Wait for the instance to be "Running" (2-3 minutes)
-8. Note the **Public IP address** shown on the instance details page
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. If prompted, create a new project (name it anything, e.g., "reminder-bot")
+3. Click the hamburger menu (☰) → **Compute Engine** → **VM instances**
+4. If this is your first time, click **"Enable"** and wait ~1 minute
+5. Click **"Create Instance"**
+6. Configure the VM:
+
+   | Setting | Value |
+   |---------|-------|
+   | **Name** | `reminder-bot` |
+   | **Region** | `us-west1`, `us-central1`, or `us-east1` (these have free tier) |
+   | **Zone** | Any (e.g., `us-west1-b`) |
+   | **Machine type** | Click **"CHANGE"** → Select **e2-micro** (this is the free tier) |
+   | **Boot disk** | Click **"CHANGE"** → Select **Debian 12** → Size: **30 GB** (max free) → Click **"SELECT"** |
+   | **Firewall** | Check both **"Allow HTTP traffic"** and **"Allow HTTPS traffic"** |
+
+7. Click **"Create"** and wait 1-2 minutes for the VM to start
+8. You'll see your VM in the list with a green checkmark when ready
 
 #### 4c. Connect to Your Server
 
-**On Mac/Linux** (Terminal):
+The easiest way is using Google's built-in SSH:
+
+1. In the VM instances list, find your `reminder-bot` VM
+2. Click the **"SSH"** button (under "Connect" column)
+3. A new browser window opens with a terminal - you're now connected!
+
+**Alternative: Connect from your own terminal** (optional, for advanced users)
+
 ```bash
-# If you downloaded keys from Oracle, first fix permissions:
-chmod 400 ~/Downloads/ssh-key-*.key
-
-# Connect (replace with your actual IP and key path):
-ssh -i ~/Downloads/ssh-key-2024-01-15.key opc@YOUR_PUBLIC_IP
+# Install gcloud CLI first: https://cloud.google.com/sdk/docs/install
+gcloud compute ssh reminder-bot --zone=us-west1-b
 ```
-
-**On Windows** (PowerShell or use PuTTY):
-```powershell
-ssh -i C:\Users\YourName\Downloads\ssh-key.key opc@YOUR_PUBLIC_IP
-```
-
-> **First time connecting?** Type `yes` when asked about the fingerprint.
 
 ### Step 5: Install the Bot on Your Server (15 minutes)
 
-Run these commands one at a time after connecting via SSH:
+Run these commands one at a time in the SSH terminal:
 
 ```bash
 # Update system packages
-sudo dnf update -y
+sudo apt update && sudo apt upgrade -y
 
 # Install Python 3.11 and git
-sudo dnf install -y python3.11 python3.11-pip git
+sudo apt install -y python3.11 python3.11-venv python3-pip git
 
-# Clone the repository
+# Clone the repository (replace YOUR_USERNAME with your GitHub username)
 git clone https://github.com/YOUR_USERNAME/reminder-system-claude.git
 cd reminder-system-claude
 
-# Install Python dependencies
-pip3.11 install -r requirements.txt
+# Create a virtual environment and install dependencies
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 
 # Create your config file
 cp config.example.yaml config.yaml
@@ -146,7 +149,12 @@ Save and exit: Press `Ctrl+X`, then `Y`, then `Enter`
 ### Step 7: Test the Bot (2 minutes)
 
 ```bash
-python3.11 bot.py
+# Make sure you're in the right directory with venv activated
+cd ~/reminder-system-claude
+source venv/bin/activate
+
+# Run the bot
+python bot.py
 ```
 
 Now open Telegram and message your bot:
@@ -166,7 +174,7 @@ Create a systemd service so the bot starts automatically and restarts if it cras
 sudo nano /etc/systemd/system/reminder-bot.service
 ```
 
-Paste this content (replace `YOUR_USERNAME` with your actual Oracle username, usually `opc`):
+Paste this content exactly:
 ```ini
 [Unit]
 Description=Reminder Bot
@@ -174,15 +182,21 @@ After=network.target
 
 [Service]
 Type=simple
-User=opc
-WorkingDirectory=/home/opc/reminder-system-claude
-ExecStart=/usr/bin/python3.11 /home/opc/reminder-system-claude/bot.py
+User=YOUR_GOOGLE_USERNAME
+WorkingDirectory=/home/YOUR_GOOGLE_USERNAME/reminder-system-claude
+ExecStart=/home/YOUR_GOOGLE_USERNAME/reminder-system-claude/venv/bin/python /home/YOUR_GOOGLE_USERNAME/reminder-system-claude/bot.py
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+**Important:** Replace `YOUR_GOOGLE_USERNAME` with your actual username. To find it, run:
+```bash
+whoami
+```
+It's usually your Google email without the @gmail.com part, or a name like `your_name`.
 
 Save and exit (`Ctrl+X`, `Y`, `Enter`), then:
 
@@ -197,16 +211,6 @@ sudo systemctl status reminder-bot
 ```
 
 You should see "active (running)" in green.
-
-### Step 9: Open Firewall (if needed)
-
-Oracle Cloud has a firewall. The bot uses outbound connections only, so it should work. But if you have issues:
-
-```bash
-# This is usually not needed, but just in case:
-sudo firewall-cmd --permanent --add-port=443/tcp
-sudo firewall-cmd --reload
-```
 
 ---
 
@@ -314,13 +318,27 @@ sudo journalctl -u reminder-bot -n 50
 - Check you haven't exceeded free tier limits (unlikely for personal use)
 - Make sure the key is enabled at [Google AI Studio](https://aistudio.google.com)
 
+### SSH Connection Issues
+If the browser-based SSH disconnects:
+1. Go back to [VM instances](https://console.cloud.google.com/compute/instances)
+2. Click the SSH button again
+3. Your bot is still running (the systemd service keeps it alive)
+
+### VM Stopped Unexpectedly
+Google's free tier VMs can occasionally be preempted. Check:
+1. Go to [VM instances](https://console.cloud.google.com/compute/instances)
+2. If stopped, click the three dots (⋮) → **Start**
+3. The systemd service will auto-start the bot
+
 ---
 
 ## Cost Summary
 
 | Item | Cost |
 |------|------|
-| Oracle Cloud | $0 (Always Free tier) |
+| Google Cloud | $0 (Always Free e2-micro in us-west1/us-central1/us-east1) |
 | Gemini API | $0 (Free tier, generous limits) |
 | Telegram | $0 |
 | **Total** | **$0/month** |
+
+> **Note:** The free tier requires your VM to be in specific US regions. 30GB disk and e2-micro are within free limits. Egress (outbound data) has a free allowance of 1GB/month to most regions, which is plenty for this bot.
