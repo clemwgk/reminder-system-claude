@@ -1,0 +1,10 @@
+# Reminder Bot Dependencies
+
+# Telegram Bot
+python-telegram-bot[job-queue]==21.3
+
+# HTTP client for LLM APIs
+aiohttp==3.9.1
+
+# YAML config parsing
+PyYAML==6.0.1

@@ -1,0 +1,55 @@
+# Reminder Bot Configuration
+# Copy this file to config.yaml and fill in your values
+# NEVER commit config.yaml to git (it contains secrets)
+
+# Telegram Bot Configuration
+telegram:
+  bot_token: "YOUR_BOT_TOKEN_HERE"  # Get from @BotFather on Telegram
+
+  # Authorized user IDs (only these users can interact with the bot)
+  # To find your ID: message the bot and it will tell you your ID if you're not authorized
+  authorized_users:
+    - 123456789  # Replace with your Telegram user ID
+    # - 987654321  # Uncomment and add partner's ID
+
+# LLM Configuration
+llm:
+  # Provider: "gemini" (cloud, free) or "ollama" (local, private)
+  provider: "gemini"
+
+  # Gemini settings (used when provider is "gemini")
+  gemini:
+    api_key: "YOUR_GEMINI_API_KEY_HERE"  # Get from aistudio.google.com
+    model: "gemini-1.5-flash"
+
+  # Ollama settings (used when provider is "ollama")
+  # For future migration to Raspberry Pi
+  ollama:
+    host: "http://localhost:11434"
+    model: "llama3.2"
+
+# Timezone (for interpreting "tomorrow", "next week", etc.)
+timezone: "Asia/Singapore"
+
+# Default schedule rules
+# These define what happens when no specific time is given
+schedule_defaults:
+  # General reminders: default to next morning
+  general:
+    default_time: "09:00"
+
+  # Bill reminders: default to Saturday morning
+  bill:
+    day: "saturday"
+    time: "09:00"
+
+  # Food expiry reminders: day before, morning and evening
+  food_expiry:
+    days_before: 1
+    times:
+      - "09:00"
+      - "18:00"
+
+# Database path (SQLite)
+database:
+  path: "reminders.db"
