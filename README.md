@@ -70,19 +70,59 @@ This gives you a free server that runs 24/7.
 3. Click the hamburger menu (☰) → **Compute Engine** → **VM instances**
 4. If this is your first time, click **"Enable"** and wait ~1 minute
 5. Click **"Create Instance"**
-6. Configure the VM:
 
-   | Setting | Value |
-   |---------|-------|
-   | **Name** | `reminder-bot` |
-   | **Region** | `us-west1`, `us-central1`, or `us-east1` (these have free tier) |
-   | **Zone** | Any (e.g., `us-west1-b`) |
-   | **Machine type** | Click **"CHANGE"** → Select **e2-micro** (this is the free tier) |
-   | **Boot disk** | Click **"CHANGE"** → Select **Debian 12** → Size: **30 GB** (max free) → Click **"SELECT"** |
-   | **Firewall** | Check both **"Allow HTTP traffic"** and **"Allow HTTPS traffic"** |
+**Configure each section carefully (the defaults are NOT free):**
 
-7. Click **"Create"** and wait 1-2 minutes for the VM to start
-8. You'll see your VM in the list with a green checkmark when ready
+**Name and Region:**
+| Setting | What to select |
+|---------|----------------|
+| Name | `reminder-bot` (or anything you like) |
+| Region | **Must be one of:** `us-west1` (Oregon), `us-central1` (Iowa), or `us-east1` (South Carolina) |
+| Zone | Any zone within your chosen region (e.g., `us-west1-b`) |
+
+**Machine configuration (IMPORTANT - defaults are not free):**
+
+6. Under "Machine configuration":
+   - **Series**: Select **E2** (should be default)
+   - **Machine type**: Click the dropdown and select **e2-micro (2 vCPU, 1 GB memory)**
+
+   > ⚠️ **Warning:** The display says "2 vCPU" but e2-micro uses shared CPU time. This IS the free tier option. Do NOT select e2-small or anything else.
+
+**Boot disk (IMPORTANT - must change disk type):**
+
+7. Click **"Change"** next to Boot disk
+8. In the popup:
+   - **Operating system**: Debian
+   - **Version**: Debian GNU/Linux 12 (bookworm)
+   - **Boot disk type**: **⚠️ CHANGE THIS** → Select **Standard persistent disk** (NOT "Balanced persistent disk" which is the default and costs money)
+   - **Size**: 30 GB (maximum free)
+9. Click **"Select"**
+
+**Verify your cost estimate shows $0:**
+
+Before proceeding, check the cost panel on the right side. It should show:
+```
+Monthly estimate: $0.00
+```
+
+If it shows any cost, you've selected something wrong. Common mistakes:
+- Wrong region (must be us-west1, us-central1, or us-east1)
+- Wrong disk type (must be "Standard persistent disk", not "Balanced")
+- Wrong machine type (must be e2-micro)
+
+**Firewall:**
+
+10. Scroll down to "Firewall"
+11. Check both:
+    - ☑️ Allow HTTP traffic
+    - ☑️ Allow HTTPS traffic
+
+**Create:**
+
+12. Click **"Create"** and wait 1-2 minutes
+13. You'll see your VM in the list with a green checkmark when ready
+
+> **Free Tier Summary:** 1x e2-micro VM + 30GB standard disk in us-west1/us-central1/us-east1 = $0/month forever. See [Google Cloud Free Tier docs](https://cloud.google.com/free/docs/free-cloud-features) for details.
 
 #### 4c. Connect to Your Server
 
