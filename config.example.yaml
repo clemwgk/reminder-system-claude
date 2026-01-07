@@ -20,7 +20,7 @@ llm:
   # Gemini settings (used when provider is "gemini")
   gemini:
     api_key: "YOUR_GEMINI_API_KEY_HERE"  # Get from aistudio.google.com
-    model: "gemini-2.0-flash"
+    model: "gemini-2.0-flash-lite"  # Use flash-lite for best free tier quota (1000 req/day)
 
   # Ollama settings (used when provider is "ollama")
   # For future migration to Raspberry Pi
