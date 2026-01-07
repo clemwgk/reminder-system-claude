@@ -211,6 +211,87 @@ Example response:
             return {"error": f"LLM request failed: {e}"}
 
 
+class GroqProvider(LLMProvider):
+    """Groq API provider (free tier with generous limits)."""
+
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = "https://api.groq.com/openai/v1"
+
+    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
+        import aiohttp
+
+        prompt = f"""You are a reminder parsing assistant. Parse the user's reminder request and extract structured information.
+
+Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time)
+
+User input: "{user_input}"
+
+Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
+- "task": the thing to be reminded about (string)
+- "category": one of "general", "bill", or "food_expiry" based on the content
+- "scheduled_time": ISO format datetime if a specific time was mentioned, or null if not specified
+- "time_hint": the original time reference from the user (e.g., "tomorrow", "next week", "3pm"), or null if none
+
+Rules for category detection:
+- "bill": anything related to payments, bills, subscriptions, dues, invoices
+- "food_expiry": anything about food going bad, expiring, use by dates
+- "general": everything else
+
+Rules for scheduled_time:
+- "tomorrow" = next day at 09:00
+- "tomorrow morning" = next day at 09:00
+- "tomorrow evening" = next day at 18:00
+- "next week" = same day next week at 09:00
+- "in X hours/minutes" = current time + X
+- If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
+- If no time mentioned at all, set to null (the system will apply category defaults)
+
+Example response:
+{{"task": "pay electricity bill", "category": "bill", "scheduled_time": "2024-01-15T09:00:00", "time_hint": "next week"}}
+"""
+
+        url = f"{self.base_url}/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": 256,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        return {"error": f"Groq API error: {error_text}"}
+
+                    data = await response.json()
+
+            # Extract the text response (OpenAI-compatible format)
+            text = data["choices"][0]["message"]["content"].strip()
+
+            # Clean up potential markdown code blocks
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]  # Remove first line
+                text = text.rsplit("```", 1)[0]  # Remove last ```
+
+            result = json.loads(text)
+            return result
+
+        except json.JSONDecodeError as e:
+            return {"error": f"Failed to parse LLM response: {e}"}
+        except Exception as e:
+            return {"error": f"LLM request failed: {e}"}
+
+
 def create_llm_provider(config: dict) -> LLMProvider:
     """Factory function to create the appropriate LLM provider."""
     provider_name = config["llm"]["provider"]
@@ -224,6 +305,11 @@ def create_llm_provider(config: dict) -> LLMProvider:
         return OllamaProvider(
             host=config["llm"]["ollama"]["host"],
             model=config["llm"]["ollama"]["model"],
+        )
+    elif provider_name == "groq":
+        return GroqProvider(
+            api_key=config["llm"]["groq"]["api_key"],
+            model=config["llm"]["groq"]["model"],
         )
     else:
         raise ValueError(f"Unknown LLM provider: {provider_name}")

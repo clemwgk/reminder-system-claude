@@ -14,13 +14,22 @@ telegram:
 
 # LLM Configuration
 llm:
-  # Provider: "gemini" (cloud, free) or "ollama" (local, private)
-  provider: "gemini"
+  # Provider options:
+  # - "groq" (recommended, free tier: 14,400 req/day)
+  # - "gemini" (free tier severely limited as of Dec 2025)
+  # - "ollama" (local, private - for Raspberry Pi)
+  provider: "groq"
 
-  # Gemini settings (used when provider is "gemini")
+  # Groq settings (recommended - best free tier)
+  # Get API key from: https://console.groq.com
+  groq:
+    api_key: "YOUR_GROQ_API_KEY_HERE"
+    model: "llama-3.3-70b-versatile"
+
+  # Gemini settings (backup option - free tier limited)
   gemini:
     api_key: "YOUR_GEMINI_API_KEY_HERE"  # Get from aistudio.google.com
-    model: "gemini-2.0-flash-lite"  # Use flash-lite for best free tier quota (1000 req/day)
+    model: "gemini-2.0-flash-lite"
 
   # Ollama settings (used when provider is "ollama")
   # For future migration to Raspberry Pi
