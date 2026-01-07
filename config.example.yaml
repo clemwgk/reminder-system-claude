@@ -15,12 +15,19 @@ telegram:
 # LLM Configuration
 llm:
   # Provider options:
-  # - "groq" (recommended, free tier: 14,400 req/day)
+  # - "openai" (gpt-4o-mini, very cheap ~$0.15/1M tokens)
+  # - "groq" (free tier: 14,400 req/day, no credit card)
   # - "gemini" (free tier severely limited as of Dec 2025)
   # - "ollama" (local, private - for Raspberry Pi)
-  provider: "groq"
+  provider: "openai"
 
-  # Groq settings (recommended - best free tier)
+  # OpenAI settings (recommended if you have an API key)
+  # Get API key from: https://platform.openai.com/api-keys
+  openai:
+    api_key: "YOUR_OPENAI_API_KEY_HERE"
+    model: "gpt-4o-mini"  # Very cheap: ~$0.15/1M input tokens
+
+  # Groq settings (best free option - no credit card needed)
   # Get API key from: https://console.groq.com
   groq:
     api_key: "YOUR_GROQ_API_KEY_HERE"
