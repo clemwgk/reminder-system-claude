@@ -74,7 +74,7 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         self.api_key = api_key
         self.model = model
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.base_url = "https://generativelanguage.googleapis.com/v1"
 
     async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
         import aiohttp
