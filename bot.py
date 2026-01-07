@@ -71,10 +71,10 @@ class LLMProvider(ABC):
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
         self.api_key = api_key
         self.model = model
-        self.base_url = "https://generativelanguage.googleapis.com/v1"
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
     async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
         import aiohttp
