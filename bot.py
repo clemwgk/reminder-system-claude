@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
@@ -870,12 +871,67 @@ class ReminderBot:
             return
 
         user_input = update.message.text.strip()
+        user_input_lower = user_input.lower()
         current_time = self._now()
 
         # Get recent reminders for context
         recent_reminders = self.db.get_recent_reminders(user_id, limit=5)
 
-        # Parse with LLM (including recent reminders for context)
+        # KEYWORD FALLBACK: Detect obvious commands before calling LLM
+        # This catches cases where LLM might misinterpret simple commands
+
+        # Check for "list" command
+        if user_input_lower in ["list", "show", "show reminders", "show my reminders",
+                                 "list reminders", "what reminders", "my reminders"]:
+            reminders = self.db.get_pending_reminders()
+            if not reminders:
+                await update.message.reply_text("No pending reminders.")
+            else:
+                lines = ["Pending reminders:\n"]
+                for r in reminders:
+                    scheduled = datetime.fromisoformat(r["scheduled_time"])
+                    time_str = scheduled.strftime("%a %d %b, %H:%M")
+                    shared_icon = " 👥" if r.get("notify_all") else ""
+                    lines.append(f"[{r['id']}] {r['task']}{shared_icon}\n    📅 {time_str}")
+                await update.message.reply_text("\n".join(lines))
+            return
+
+        # Check for cancel/delete/remove commands
+        cancel_keywords = ["cancel", "delete", "remove", "drop"]
+        is_cancel = any(user_input_lower.startswith(kw) for kw in cancel_keywords)
+        if not is_cancel:
+            is_cancel = any(kw in user_input_lower for kw in ["cancel that", "delete that",
+                           "remove that", "cancel the", "delete the", "remove the"])
+
+        if is_cancel:
+            # Try to extract target ID
+            target_id = None
+
+            # Check for "last", "that", "previous" references
+            if any(word in user_input_lower for word in ["last", "that", "previous", "the one"]):
+                if recent_reminders:
+                    target_id = recent_reminders[0]["id"]
+
+            # Check for explicit ID number
+            id_match = re.search(r'\b(\d+)\b', user_input)
+            if id_match:
+                target_id = int(id_match.group(1))
+
+            if target_id:
+                if self.db.cancel_reminder(target_id):
+                    await update.message.reply_text(f"Cancelled reminder [{target_id}].")
+                else:
+                    await update.message.reply_text(
+                        f"Reminder [{target_id}] not found or already sent."
+                    )
+            else:
+                await update.message.reply_text(
+                    "I couldn't figure out which reminder to cancel.\n"
+                    "Try: 'cancel reminder 5' or 'cancel the last one'"
+                )
+            return
+
+        # Parse with LLM (for more complex inputs)
         await update.message.reply_text("Processing...")
 
         result = await self.llm.parse_reminder(user_input, current_time, recent_reminders)
@@ -891,7 +947,13 @@ class ReminderBot:
 
         action = result.get("action", "create")
         target_id = result.get("target_id")
+
+        # Detect shared reminders - keyword fallback in case LLM misses it
         shared = result.get("shared", False)
+        shared_keywords = ["remind us", "we need to", "we should", "remind both",
+                          "notify us", "alert us", "tell us"]
+        if any(kw in user_input_lower for kw in shared_keywords):
+            shared = True
 
         # Handle different actions
         if action == "list":
