@@ -879,10 +879,16 @@ class ReminderBot:
 
         # KEYWORD FALLBACK: Detect obvious commands before calling LLM
         # This catches cases where LLM might misinterpret simple commands
+        # BUT we must be careful not to catch "remind me to delete my emails" as a cancel
 
-        # Check for "list" command
-        if user_input_lower in ["list", "show", "show reminders", "show my reminders",
-                                 "list reminders", "what reminders", "my reminders"]:
+        # Check if this looks like a REMINDER CREATION (has "remind" before action words)
+        is_reminder_creation = bool(re.match(r'^remind\s+(me|us)\s+to\s+', user_input_lower))
+
+        # Check for "list" command - only exact matches, not "remind me to make a list"
+        if not is_reminder_creation and user_input_lower in [
+            "list", "show", "show reminders", "show my reminders",
+            "list reminders", "what reminders", "my reminders"
+        ]:
             reminders = self.db.get_pending_reminders()
             if not reminders:
                 await update.message.reply_text("No pending reminders.")
@@ -897,11 +903,19 @@ class ReminderBot:
             return
 
         # Check for cancel/delete/remove commands
+        # Only trigger if NOT a reminder creation like "remind me to cancel my subscription"
         cancel_keywords = ["cancel", "delete", "remove", "drop"]
-        is_cancel = any(user_input_lower.startswith(kw) for kw in cancel_keywords)
-        if not is_cancel:
-            is_cancel = any(kw in user_input_lower for kw in ["cancel that", "delete that",
-                           "remove that", "cancel the", "delete the", "remove the"])
+        is_cancel = False
+        if not is_reminder_creation:
+            # Check if starts with cancel keyword
+            is_cancel = any(user_input_lower.startswith(kw) for kw in cancel_keywords)
+            # Also check for "cancel that", "delete the last", etc.
+            if not is_cancel:
+                is_cancel = any(kw in user_input_lower for kw in [
+                    "cancel that", "delete that", "remove that",
+                    "cancel the last", "delete the last", "remove the last",
+                    "cancel reminder", "delete reminder", "remove reminder"
+                ])
 
         if is_cancel:
             # Try to extract target ID
