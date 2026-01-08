@@ -71,7 +71,7 @@ class LLMProvider(ABC):
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-lite"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite"):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
