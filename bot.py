@@ -54,42 +54,65 @@ class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
     @abstractmethod
-    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
+    async def parse_reminder(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> dict:
         """
         Parse natural language reminder input.
 
         Returns dict with:
-            - task: str (what to remind about)
+            - action: str (create, cancel, modify, duplicate, list)
+            - task: str (what to remind about, for create/modify)
             - category: str (general, bill, food_expiry)
             - scheduled_time: datetime or None
             - time_hint: str (original time reference from user)
+            - target_id: int or None (for cancel/modify - ID of reminder to act on)
+            - shared: bool (True if "remind us" / notify all users)
             - error: str or None (if parsing failed)
         """
         pass
 
+    def _build_prompt(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> str:
+        """Build the common prompt for all providers."""
+        recent_context = ""
+        if recent_reminders:
+            recent_lines = []
+            for r in recent_reminders[:5]:  # Last 5 reminders
+                recent_lines.append(f"  - ID {r['id']}: \"{r['task']}\" ({r['category']}) at {r['scheduled_time']}")
+            recent_context = f"\n\nRecent reminders (for context):\n" + "\n".join(recent_lines)
 
-class GeminiProvider(LLMProvider):
-    """Google Gemini API provider (free tier)."""
+        return f"""You are a reminder parsing assistant. Parse the user's message and determine what action they want to take.
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite"):
-        self.api_key = api_key
-        self.model = model
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-
-    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
-        import aiohttp
-
-        prompt = f"""You are a reminder parsing assistant. Parse the user's reminder request and extract structured information.
-
-Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time)
+Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time){recent_context}
 
 User input: "{user_input}"
 
 Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "task": the thing to be reminded about (string)
-- "category": one of "general", "bill", or "food_expiry" based on the content
-- "scheduled_time": ISO format datetime if a specific time was mentioned, or null if not specified
-- "time_hint": the original time reference from the user (e.g., "tomorrow", "next week", "3pm"), or null if none
+- "action": one of "create", "cancel", "modify", "duplicate", or "list"
+- "task": the thing to be reminded about (string, required for create/modify, null for others)
+- "category": one of "general", "bill", or "food_expiry" (for create/modify)
+- "scheduled_time": ISO format datetime if a specific time was mentioned, or null
+- "time_hint": the original time reference from the user, or null
+- "target_id": the ID of an existing reminder to cancel/modify/duplicate, or null
+- "shared": true if the user said "remind us" or wants to notify all users, false otherwise
+
+ACTION DETECTION RULES (VERY IMPORTANT):
+- "create": User wants a NEW reminder (e.g., "remind me to...", "set a reminder for...")
+- "cancel": User wants to REMOVE/DELETE a reminder (e.g., "remove that", "cancel reminder 5", "delete the last one")
+- "modify": User wants to CHANGE an existing reminder (e.g., "change reminder 3 to 5pm", "update the last one")
+- "duplicate": User wants to COPY an existing reminder (e.g., "set one more of the same", "duplicate that", "another one like the last")
+- "list": User wants to SEE their reminders (e.g., "show my reminders", "what reminders do I have")
+
+TARGET IDENTIFICATION:
+- If user says "the last one", "that one", "that reminder", "the previous one" → use the most recent reminder ID from context
+- If user gives an ID number (e.g., "reminder 5", "cancel 3") → use that ID
+- For duplicate: copy the task/category from the target, but use any new time specified
+
+SHARED REMINDERS:
+- If user says "remind us", "we need to", "remind both of us" → set shared: true
+- Default is shared: false (only notify the person who created it)
 
 Rules for category detection:
 - "bill": anything related to payments, bills, subscriptions, dues, invoices
@@ -105,17 +128,34 @@ Rules for scheduled_time:
 - If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
 - If no time mentioned at all, set to null (the system will apply category defaults)
 
-Example response:
-{{"task": "pay electricity bill", "category": "bill", "scheduled_time": "2024-01-15T09:00:00", "time_hint": "next week"}}
+Example responses:
+{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false}}
+{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false}}
+{{"action": "duplicate", "task": "check milk expiry", "category": "food_expiry", "scheduled_time": "2024-01-15T19:30:00", "time_hint": "7:30pm", "target_id": 4, "shared": false}}
 """
 
+
+class GeminiProvider(LLMProvider):
+    """Google Gemini API provider (free tier)."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite"):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+    async def parse_reminder(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> dict:
+        import aiohttp
+
+        prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 256,
+                "maxOutputTokens": 512,
             },
         }
 
@@ -153,30 +193,12 @@ class OllamaProvider(LLMProvider):
         self.host = host
         self.model = model
 
-    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
+    async def parse_reminder(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> dict:
         import aiohttp
 
-        prompt = f"""You are a reminder parsing assistant. Parse the user's reminder request and extract structured information.
-
-Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time)
-
-User input: "{user_input}"
-
-Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "task": the thing to be reminded about (string)
-- "category": one of "general", "bill", or "food_expiry" based on the content
-- "scheduled_time": ISO format datetime if a specific time was mentioned, or null if not specified
-- "time_hint": the original time reference from the user (e.g., "tomorrow", "next week", "3pm"), or null if none
-
-Rules for category detection:
-- "bill": anything related to payments, bills, subscriptions, dues, invoices
-- "food_expiry": anything about food going bad, expiring, use by dates
-- "general": everything else
-
-Example response:
-{{"task": "pay electricity bill", "category": "bill", "scheduled_time": "2024-01-15T09:00:00", "time_hint": "next week"}}
-"""
-
+        prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.host}/api/generate"
 
         payload = {
@@ -219,39 +241,12 @@ class OpenAIProvider(LLMProvider):
         self.model = model
         self.base_url = "https://api.openai.com/v1"
 
-    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
+    async def parse_reminder(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> dict:
         import aiohttp
 
-        prompt = f"""You are a reminder parsing assistant. Parse the user's reminder request and extract structured information.
-
-Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time)
-
-User input: "{user_input}"
-
-Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "task": the thing to be reminded about (string)
-- "category": one of "general", "bill", or "food_expiry" based on the content
-- "scheduled_time": ISO format datetime if a specific time was mentioned, or null if not specified
-- "time_hint": the original time reference from the user (e.g., "tomorrow", "next week", "3pm"), or null if none
-
-Rules for category detection:
-- "bill": anything related to payments, bills, subscriptions, dues, invoices
-- "food_expiry": anything about food going bad, expiring, use by dates
-- "general": everything else
-
-Rules for scheduled_time:
-- "tomorrow" = next day at 09:00
-- "tomorrow morning" = next day at 09:00
-- "tomorrow evening" = next day at 18:00
-- "next week" = same day next week at 09:00
-- "in X hours/minutes" = current time + X
-- If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
-- If no time mentioned at all, set to null (the system will apply category defaults)
-
-Example response:
-{{"task": "pay electricity bill", "category": "bill", "scheduled_time": "2024-01-15T09:00:00", "time_hint": "next week"}}
-"""
-
+        prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/chat/completions"
 
         headers = {
@@ -263,7 +258,7 @@ Example response:
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 256,
+            "max_tokens": 512,
         }
 
         try:
@@ -300,39 +295,12 @@ class GroqProvider(LLMProvider):
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1"
 
-    async def parse_reminder(self, user_input: str, current_time: datetime) -> dict:
+    async def parse_reminder(
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+    ) -> dict:
         import aiohttp
 
-        prompt = f"""You are a reminder parsing assistant. Parse the user's reminder request and extract structured information.
-
-Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapore Time)
-
-User input: "{user_input}"
-
-Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "task": the thing to be reminded about (string)
-- "category": one of "general", "bill", or "food_expiry" based on the content
-- "scheduled_time": ISO format datetime if a specific time was mentioned, or null if not specified
-- "time_hint": the original time reference from the user (e.g., "tomorrow", "next week", "3pm"), or null if none
-
-Rules for category detection:
-- "bill": anything related to payments, bills, subscriptions, dues, invoices
-- "food_expiry": anything about food going bad, expiring, use by dates
-- "general": everything else
-
-Rules for scheduled_time:
-- "tomorrow" = next day at 09:00
-- "tomorrow morning" = next day at 09:00
-- "tomorrow evening" = next day at 18:00
-- "next week" = same day next week at 09:00
-- "in X hours/minutes" = current time + X
-- If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
-- If no time mentioned at all, set to null (the system will apply category defaults)
-
-Example response:
-{{"task": "pay electricity bill", "category": "bill", "scheduled_time": "2024-01-15T09:00:00", "time_hint": "next week"}}
-"""
-
+        prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/chat/completions"
 
         headers = {
@@ -344,7 +312,7 @@ Example response:
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 256,
+            "max_tokens": 512,
         }
 
         try:
@@ -424,13 +392,19 @@ class ReminderDB:
                     created_at TEXT NOT NULL,
                     created_by INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
-                    sent_at TEXT
+                    sent_at TEXT,
+                    notify_all INTEGER NOT NULL DEFAULT 0
                 )
             """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_status_time
                 ON reminders (status, scheduled_time)
             """)
+            # Add notify_all column if it doesn't exist (migration for existing DBs)
+            try:
+                conn.execute("ALTER TABLE reminders ADD COLUMN notify_all INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             conn.commit()
 
     def add_reminder(
@@ -439,13 +413,14 @@ class ReminderDB:
         category: str,
         scheduled_time: datetime,
         created_by: int,
+        notify_all: bool = False,
     ) -> int:
         """Add a new reminder. Returns the reminder ID."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status)
-                VALUES (?, ?, ?, ?, ?, 'pending')
+                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status, notify_all)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     task,
@@ -453,10 +428,46 @@ class ReminderDB:
                     scheduled_time.isoformat(),
                     datetime.now().isoformat(),
                     created_by,
+                    1 if notify_all else 0,
                 ),
             )
             conn.commit()
             return cursor.lastrowid
+
+    def get_reminder(self, reminder_id: int) -> Optional[dict]:
+        """Get a single reminder by ID."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM reminders WHERE id = ?",
+                (reminder_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_recent_reminders(self, user_id: int = None, limit: int = 5) -> list[dict]:
+        """Get recent reminders (for context in LLM parsing)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if user_id:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM reminders
+                    WHERE created_by = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (user_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM reminders
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            return [dict(row) for row in rows]
 
     def get_pending_reminders(self) -> list[dict]:
         """Get all pending reminders."""
@@ -522,6 +533,35 @@ class ReminderDB:
                 WHERE id = ? AND status = 'pending'
                 """,
                 (new_time.isoformat(), reminder_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def modify_reminder(
+        self, reminder_id: int, new_time: datetime = None, new_task: str = None
+    ) -> bool:
+        """Modify a pending reminder. Returns True if successful."""
+        updates = []
+        params = []
+        if new_time:
+            updates.append("scheduled_time = ?")
+            params.append(new_time.isoformat())
+        if new_task:
+            updates.append("task = ?")
+            params.append(new_task)
+
+        if not updates:
+            return False
+
+        params.append(reminder_id)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                f"""
+                UPDATE reminders
+                SET {', '.join(updates)}
+                WHERE id = ? AND status = 'pending'
+                """,
+                params,
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -684,17 +724,26 @@ class ReminderBot:
             "Creating reminders:\n"
             "Just type naturally! Examples:\n"
             "• 'remind me to buy groceries tomorrow'\n"
+            "• 'remind us to call the plumber' (notifies both)\n"
             "• 'pay credit card bill' (schedules for Saturday)\n"
             "• 'milk expires in 3 days' (reminds day before)\n\n"
+            "Modifying reminders (natural language):\n"
+            "• 'cancel that last reminder'\n"
+            "• 'remove reminder 5'\n"
+            "• 'duplicate that for 7pm'\n"
+            "• 'change reminder 3 to tomorrow'\n\n"
             "Commands:\n"
             "/list - Show all pending reminders\n"
             "/cancel <id> - Cancel a reminder\n"
             "/delay <id> <hours> - Delay by X hours\n"
+            "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
             "/help - Show this message\n\n"
             "Categories & defaults:\n"
             "• Bills → Saturday 9 AM\n"
             "• Food expiry → Day before, 9 AM & 6 PM\n"
-            "• General → Next day 9 AM"
+            "• General → Next day 9 AM\n\n"
+            "Shared reminders:\n"
+            "Say 'remind us' instead of 'remind me' to notify all users."
         )
 
     async def list_reminders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -777,8 +826,41 @@ class ReminderBot:
         else:
             await update.message.reply_text("Failed to delay reminder.")
 
+    async def snooze_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /snooze command - snooze for 15 minutes (or custom duration)."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /snooze <reminder_id> [minutes]\n"
+                "Example: /snooze 5       (snooze 15 mins)\n"
+                "Example: /snooze 5 30    (snooze 30 mins)"
+            )
+            return
+
+        try:
+            reminder_id = int(context.args[0])
+            minutes = int(context.args[1]) if len(context.args) > 1 else 15
+        except ValueError:
+            await update.message.reply_text("Invalid input. Use: /snooze <id> [minutes]")
+            return
+
+        # Calculate new time from now (not from original scheduled time)
+        new_time = self._now() + timedelta(minutes=minutes)
+
+        if self.db.delay_reminder(reminder_id, new_time):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] snoozed for {minutes} minutes.\n"
+                f"New time: {new_time.strftime('%H:%M')}"
+            )
+        else:
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] not found or already sent."
+            )
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle natural language reminder input."""
+        """Handle natural language reminder input with smart action detection."""
         user_id = update.effective_user.id
 
         if not self._is_authorized(user_id):
@@ -790,10 +872,13 @@ class ReminderBot:
         user_input = update.message.text.strip()
         current_time = self._now()
 
-        # Parse with LLM
+        # Get recent reminders for context
+        recent_reminders = self.db.get_recent_reminders(user_id, limit=5)
+
+        # Parse with LLM (including recent reminders for context)
         await update.message.reply_text("Processing...")
 
-        result = await self.llm.parse_reminder(user_input, current_time)
+        result = await self.llm.parse_reminder(user_input, current_time, recent_reminders)
 
         if "error" in result:
             await update.message.reply_text(
@@ -804,10 +889,128 @@ class ReminderBot:
             )
             return
 
+        action = result.get("action", "create")
+        target_id = result.get("target_id")
+        shared = result.get("shared", False)
+
+        # Handle different actions
+        if action == "list":
+            # Show pending reminders
+            reminders = self.db.get_pending_reminders()
+            if not reminders:
+                await update.message.reply_text("No pending reminders.")
+            else:
+                lines = ["Pending reminders:\n"]
+                for r in reminders:
+                    scheduled = datetime.fromisoformat(r["scheduled_time"])
+                    time_str = scheduled.strftime("%a %d %b, %H:%M")
+                    shared_icon = "👥" if r.get("notify_all") else ""
+                    lines.append(f"[{r['id']}] {r['task']} {shared_icon}\n    📅 {time_str}")
+                await update.message.reply_text("\n".join(lines))
+            return
+
+        elif action == "cancel":
+            # Cancel a reminder
+            if not target_id:
+                await update.message.reply_text(
+                    "I couldn't figure out which reminder to cancel.\n"
+                    "Try: 'cancel reminder 5' or use /cancel <id>"
+                )
+                return
+
+            if self.db.cancel_reminder(target_id):
+                await update.message.reply_text(f"Cancelled reminder [{target_id}].")
+            else:
+                await update.message.reply_text(
+                    f"Reminder [{target_id}] not found or already sent."
+                )
+            return
+
+        elif action == "modify":
+            # Modify an existing reminder
+            if not target_id:
+                await update.message.reply_text(
+                    "I couldn't figure out which reminder to modify.\n"
+                    "Try: 'change reminder 5 to tomorrow' or use /delay <id> <hours>"
+                )
+                return
+
+            # Parse new time if provided
+            scheduled_time_str = result.get("scheduled_time")
+            new_time = None
+            if scheduled_time_str:
+                try:
+                    new_time = datetime.fromisoformat(scheduled_time_str)
+                    if new_time.tzinfo is None:
+                        new_time = new_time.replace(tzinfo=self.tz)
+                except (ValueError, TypeError):
+                    pass
+
+            new_task = result.get("task")
+
+            if self.db.modify_reminder(target_id, new_time=new_time, new_task=new_task):
+                changes = []
+                if new_time:
+                    changes.append(f"time → {new_time.strftime('%a %d %b, %H:%M')}")
+                if new_task:
+                    changes.append(f"task → '{new_task}'")
+                await update.message.reply_text(
+                    f"Modified reminder [{target_id}]:\n" + "\n".join(changes)
+                )
+            else:
+                await update.message.reply_text(
+                    f"Reminder [{target_id}] not found or already sent."
+                )
+            return
+
+        elif action == "duplicate":
+            # Duplicate an existing reminder with optional new time
+            if not target_id:
+                await update.message.reply_text(
+                    "I couldn't figure out which reminder to duplicate.\n"
+                    "Try: 'duplicate reminder 5 for 7pm'"
+                )
+                return
+
+            # Get the original reminder
+            original = self.db.get_reminder(target_id)
+            if not original:
+                await update.message.reply_text(
+                    f"Reminder [{target_id}] not found."
+                )
+                return
+
+            # Use task/category from original, but new time if specified
+            task = result.get("task") or original["task"]
+            category = result.get("category") or original["category"]
+            scheduled_time_str = result.get("scheduled_time")
+
+            scheduled_time = None
+            if scheduled_time_str:
+                try:
+                    scheduled_time = datetime.fromisoformat(scheduled_time_str)
+                    if scheduled_time.tzinfo is None:
+                        scheduled_time = scheduled_time.replace(tzinfo=self.tz)
+                except (ValueError, TypeError):
+                    pass
+
+            # Resolve final time
+            final_time = self.scheduler.resolve_time(category, scheduled_time, current_time)
+            if isinstance(final_time, list):
+                final_time = final_time[0]  # Just take first time for duplicates
+
+            new_id = self.db.add_reminder(task, category, final_time, user_id, notify_all=shared)
+            await update.message.reply_text(
+                f"Duplicated reminder [{target_id}] → [{new_id}]\n"
+                f"'{task}'\n"
+                f"Scheduled: {final_time.strftime('%A %d %B, %H:%M')}"
+            )
+            return
+
+        # Default: CREATE action
         task = result.get("task", user_input)
         category = result.get("category", "general")
         scheduled_time_str = result.get("scheduled_time")
-        time_hint = result.get("time_hint")
 
         # Parse scheduled time if provided
         scheduled_time = None
@@ -822,32 +1025,37 @@ class ReminderBot:
         # Resolve final time(s) using schedule rules
         final_times = self.scheduler.resolve_time(category, scheduled_time, current_time)
 
+        # Determine notification text
+        notify_text = "you" if not shared else "everyone"
+
         # Handle single or multiple reminder times
         if isinstance(final_times, list):
             # Multiple reminders (e.g., food expiry)
             ids = []
             for t in final_times:
-                rid = self.db.add_reminder(task, category, t, user_id)
+                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared)
                 ids.append(rid)
 
             times_str = "\n".join(
                 f"  • {t.strftime('%a %d %b, %H:%M')}" for t in final_times
             )
+            shared_note = " 👥 (shared)" if shared else ""
             await update.message.reply_text(
-                f"Got it! I'll remind you:\n"
-                f"'{task}'\n\n"
+                f"Got it! I'll remind {notify_text}:\n"
+                f"'{task}'{shared_note}\n\n"
                 f"Scheduled times:\n{times_str}\n\n"
                 f"Category: {category}\n"
                 f"IDs: {ids}"
             )
         else:
             # Single reminder
-            reminder_id = self.db.add_reminder(task, category, final_times, user_id)
+            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared)
             time_str = final_times.strftime("%A %d %B, %H:%M")
+            shared_note = " 👥 (shared)" if shared else ""
 
             await update.message.reply_text(
-                f"Got it! I'll remind you:\n"
-                f"'{task}'\n\n"
+                f"Got it! I'll remind {notify_text}:\n"
+                f"'{task}'{shared_note}\n\n"
                 f"Scheduled: {time_str}\n"
                 f"Category: {category}\n"
                 f"ID: [{reminder_id}]"
@@ -860,19 +1068,34 @@ class ReminderBot:
 
         for reminder in due_reminders:
             try:
-                user_id = reminder["created_by"]
+                # Determine recipients
+                notify_all = reminder.get("notify_all", 0)
+                if notify_all:
+                    # Send to all authorized users
+                    recipients = list(self.authorized_users)
+                else:
+                    # Send only to creator
+                    recipients = [reminder["created_by"]]
+
+                shared_note = " 👥" if notify_all else ""
                 message = (
-                    f"🔔 Reminder!\n\n"
+                    f"🔔 Reminder!{shared_note}\n\n"
                     f"{reminder['task']}\n\n"
-                    f"(ID: {reminder['id']}, Category: {reminder['category']})"
+                    f"(ID: {reminder['id']})\n"
+                    f"💡 /snooze {reminder['id']} to snooze 15 min"
                 )
 
-                await app.bot.send_message(chat_id=user_id, text=message)
+                for user_id in recipients:
+                    try:
+                        await app.bot.send_message(chat_id=user_id, text=message)
+                        self.logger.info(f"Sent reminder {reminder['id']} to user {user_id}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to send reminder {reminder['id']} to {user_id}: {e}")
+
                 self.db.mark_sent(reminder["id"])
-                self.logger.info(f"Sent reminder {reminder['id']} to user {user_id}")
 
             except Exception as e:
-                self.logger.error(f"Failed to send reminder {reminder['id']}: {e}")
+                self.logger.error(f"Failed to process reminder {reminder['id']}: {e}")
 
     def run(self):
         """Start the bot."""
@@ -884,6 +1107,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("list", self.list_reminders))
         app.add_handler(CommandHandler("cancel", self.cancel_reminder))
         app.add_handler(CommandHandler("delay", self.delay_reminder))
+        app.add_handler(CommandHandler("snooze", self.snooze_reminder))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )

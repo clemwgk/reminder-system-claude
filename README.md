@@ -267,6 +267,23 @@ Just message naturally:
 - "call mom at 3pm"
 - "dentist appointment next tuesday at 2pm"
 
+### Shared Reminders (Notify Both Partners)
+
+Say "remind us" instead of "remind me" to notify all authorized users:
+- "remind us to call the plumber"
+- "we need to pick up the package tomorrow"
+
+Shared reminders show a 👥 icon and will be sent to everyone.
+
+### Managing Reminders (Natural Language)
+
+You can modify reminders by talking naturally:
+- "cancel that last reminder"
+- "remove reminder 5"
+- "duplicate that for 7pm" (creates a copy at a new time)
+- "change reminder 3 to tomorrow"
+- "show my reminders"
+
 ### Commands
 
 | Command | Description |
@@ -276,6 +293,7 @@ Just message naturally:
 | `/list` | Show all pending reminders |
 | `/cancel <id>` | Cancel a reminder |
 | `/delay <id> <hours>` | Delay a reminder by X hours |
+| `/snooze <id> [mins]` | Snooze for 15 mins (or specify duration) |
 
 ### Smart Defaults
 
@@ -286,6 +304,53 @@ If you don't specify a time:
 | Bills/payments | Saturday 9 AM |
 | Food expiry | Day before at 9 AM and 6 PM |
 | Everything else | Next day 9 AM |
+
+---
+
+## Adding Your Partner
+
+To let your partner use the bot (receive shared reminders and create their own):
+
+### Step 1: Get Partner's Telegram User ID
+
+1. Have your partner search for `@userinfobot` on Telegram
+2. They send any message to it
+3. It replies with their user ID (e.g., `987654321`)
+
+### Step 2: Add Their ID to Config
+
+SSH into your server and edit the config:
+
+```bash
+nano ~/reminder-system-claude/config.yaml
+```
+
+Add their ID to the `authorized_users` list:
+
+```yaml
+telegram:
+  bot_token: "YOUR_BOT_TOKEN"
+  authorized_users:
+    - 123456789  # Your ID
+    - 987654321  # Partner's ID (add this line)
+```
+
+Save and exit (`Ctrl+X`, `Y`, `Enter`).
+
+### Step 3: Restart the Bot
+
+```bash
+sudo systemctl restart reminder-bot
+```
+
+### Step 4: Partner Starts the Bot
+
+Your partner should:
+1. Search for your bot on Telegram (by the username you created)
+2. Start a chat and send `/start`
+3. They can now create reminders and receive shared reminders
+
+**Note:** Both users can create reminders independently. Use "remind us" for shared reminders that notify both partners.
 
 ---
 
