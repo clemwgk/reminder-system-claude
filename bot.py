@@ -538,6 +538,20 @@ class ReminderDB:
             conn.commit()
             return cursor.rowcount > 0
 
+    def snooze_reminder(self, reminder_id: int, new_time: datetime) -> bool:
+        """Snooze a sent reminder - resets to pending with new time. Returns True if successful."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminders
+                SET scheduled_time = ?, status = 'pending', sent_at = NULL
+                WHERE id = ? AND status = 'sent'
+                """,
+                (new_time.isoformat(), reminder_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def modify_reminder(
         self, reminder_id: int, new_time: datetime = None, new_task: str = None
     ) -> bool:
@@ -847,17 +861,23 @@ class ReminderBot:
             await update.message.reply_text("Invalid input. Use: /snooze <id> [minutes]")
             return
 
-        # Calculate new time from now (not from original scheduled time)
+        # Calculate new time from now
         new_time = self._now() + timedelta(minutes=minutes)
 
-        if self.db.delay_reminder(reminder_id, new_time):
+        # Try snoozing sent reminder first, then pending
+        if self.db.snooze_reminder(reminder_id, new_time):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] snoozed for {minutes} minutes.\n"
+                f"New time: {new_time.strftime('%H:%M')}"
+            )
+        elif self.db.delay_reminder(reminder_id, new_time):
             await update.message.reply_text(
                 f"Reminder [{reminder_id}] snoozed for {minutes} minutes.\n"
                 f"New time: {new_time.strftime('%H:%M')}"
             )
         else:
             await update.message.reply_text(
-                f"Reminder [{reminder_id}] not found or already sent."
+                f"Reminder [{reminder_id}] not found or already cancelled."
             )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
