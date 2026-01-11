@@ -1,5 +1,7 @@
 # Reminder Bot
 
+> **Built with [Claude Code](https://docs.anthropic.com/en/docs/claude-code)** - This entire project was developed through pair programming with Claude, Anthropic's AI assistant. It demonstrates how AI-assisted development can be used to build practical, production-ready applications from scratch.
+
 A simple, privacy-conscious reminder system that works via Telegram.
 
 **Features:**
