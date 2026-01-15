@@ -752,7 +752,13 @@ class ReminderBot:
             "/cancel <id> - Cancel a reminder\n"
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
+            "/edit <id> <text> - Edit reminder text\n"
+            "/changelog - Show recent updates\n"
             "/help - Show this message\n\n"
+            "Quick reply:\n"
+            "Reply to any bot message to act on that reminder:\n"
+            "• Reply with /cancel, /snooze, /delay, /edit\n"
+            "• Or just type new text to edit the reminder\n\n"
             "Categories & defaults:\n"
             "• Bills → Saturday 9 AM\n"
             "• Food expiry → Day before, 9 AM & 6 PM\n"
@@ -880,6 +886,61 @@ class ReminderBot:
                 f"Reminder [{reminder_id}] not found or already cancelled."
             )
 
+    async def edit_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /edit command - edit the task text of a pending reminder."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Usage: /edit <reminder_id> <new text>\n"
+                "Example: /edit 48 buy infant formula by 23 Jan"
+            )
+            return
+
+        try:
+            reminder_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Invalid reminder ID.")
+            return
+
+        new_task = " ".join(context.args[1:])
+
+        if self.db.modify_reminder(reminder_id, new_task=new_task):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] updated:\n'{new_task}'"
+            )
+        else:
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] not found or already sent.\n"
+                f"(Only pending reminders can be edited)"
+            )
+
+    async def changelog_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /changelog command - show recent changes."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        changelog = (
+            "📋 Changelog\n"
+            "────────────\n\n"
+            "v1.2.0 (Jan 2025)\n"
+            "• /edit command - edit reminder text\n"
+            "• Reply-to-edit - reply to bot message to edit/cancel/snooze\n"
+            "• /changelog command\n\n"
+            "v1.1.0 (Jan 2025)\n"
+            "• Shared reminders ('remind us')\n"
+            "• /snooze command\n"
+            "• Natural language cancel/delete\n"
+            "• Smart context parsing\n\n"
+            "v1.0.0 (Jan 2025)\n"
+            "• Initial release\n"
+            "• Natural language reminders\n"
+            "• Category-based scheduling\n"
+            "• Multi-user support"
+        )
+        await update.message.reply_text(changelog)
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle natural language reminder input with smart action detection."""
         user_id = update.effective_user.id
@@ -893,6 +954,89 @@ class ReminderBot:
         user_input = update.message.text.strip()
         user_input_lower = user_input.lower()
         current_time = self._now()
+
+        # =====================================================================
+        # DIRECT REPLY FEATURE: Reply to bot message to edit/cancel/snooze/delay
+        # =====================================================================
+        if update.message.reply_to_message:
+            replied_msg = update.message.reply_to_message
+            # Check if replying to a bot message
+            if replied_msg.from_user and replied_msg.from_user.id == (await context.bot.get_me()).id:
+                # Try to extract reminder ID from the bot's message
+                # Patterns: "ID: [48]" (confirmation) or "(ID: 48)" (notification)
+                id_match = re.search(r'ID[:\s]*\[?(\d+)\]?', replied_msg.text or "")
+                if id_match:
+                    reminder_id = int(id_match.group(1))
+
+                    # Check what action the user wants
+                    if user_input_lower.startswith("/cancel"):
+                        if self.db.cancel_reminder(reminder_id):
+                            await update.message.reply_text(f"Cancelled reminder [{reminder_id}].")
+                        else:
+                            await update.message.reply_text(f"Reminder [{reminder_id}] not found or already sent.")
+                        return
+
+                    elif user_input_lower.startswith("/snooze"):
+                        # Parse optional minutes from /snooze or /snooze 30
+                        parts = user_input.split()
+                        minutes = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 15
+                        new_time = self._now() + timedelta(minutes=minutes)
+                        if self.db.snooze_reminder(reminder_id, new_time) or self.db.delay_reminder(reminder_id, new_time):
+                            await update.message.reply_text(
+                                f"Reminder [{reminder_id}] snoozed for {minutes} minutes.\n"
+                                f"New time: {new_time.strftime('%H:%M')}"
+                            )
+                        else:
+                            await update.message.reply_text(f"Reminder [{reminder_id}] not found or already cancelled.")
+                        return
+
+                    elif user_input_lower.startswith("/delay"):
+                        # Parse hours from /delay 2
+                        parts = user_input.split()
+                        if len(parts) > 1:
+                            try:
+                                hours = float(parts[1])
+                                # Get current scheduled time and add delay
+                                reminder = self.db.get_reminder(reminder_id)
+                                if reminder:
+                                    current_scheduled = datetime.fromisoformat(reminder["scheduled_time"])
+                                    new_time = current_scheduled + timedelta(hours=hours)
+                                    if self.db.delay_reminder(reminder_id, new_time):
+                                        await update.message.reply_text(
+                                            f"Reminder [{reminder_id}] delayed to {new_time.strftime('%a %d %b, %H:%M')}"
+                                        )
+                                        return
+                            except ValueError:
+                                pass
+                        await update.message.reply_text("Usage: /delay <hours> (e.g., /delay 2)")
+                        return
+
+                    elif user_input_lower.startswith("/edit"):
+                        # Parse new text from /edit new task text
+                        new_task = user_input[5:].strip()  # Remove "/edit"
+                        if new_task:
+                            if self.db.modify_reminder(reminder_id, new_task=new_task):
+                                await update.message.reply_text(f"Reminder [{reminder_id}] updated:\n'{new_task}'")
+                            else:
+                                await update.message.reply_text(
+                                    f"Reminder [{reminder_id}] not found or already sent.\n"
+                                    f"(Only pending reminders can be edited)"
+                                )
+                        else:
+                            await update.message.reply_text("Usage: /edit <new task text>")
+                        return
+
+                    else:
+                        # No slash command - treat as new task text (edit)
+                        new_task = user_input
+                        if self.db.modify_reminder(reminder_id, new_task=new_task):
+                            await update.message.reply_text(f"Reminder [{reminder_id}] updated:\n'{new_task}'")
+                        else:
+                            await update.message.reply_text(
+                                f"Reminder [{reminder_id}] not found or already sent.\n"
+                                f"(Only pending reminders can be edited)"
+                            )
+                        return
 
         # Get recent reminders for context
         recent_reminders = self.db.get_recent_reminders(user_id, limit=5)
@@ -1204,6 +1348,8 @@ class ReminderBot:
         app.add_handler(CommandHandler("cancel", self.cancel_reminder))
         app.add_handler(CommandHandler("delay", self.delay_reminder))
         app.add_handler(CommandHandler("snooze", self.snooze_reminder))
+        app.add_handler(CommandHandler("edit", self.edit_reminder))
+        app.add_handler(CommandHandler("changelog", self.changelog_command))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
