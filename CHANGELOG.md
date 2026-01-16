@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2025-01-16
+
+### Added
+- **Pop formatting**: Reminder notifications now use bold formatting for better visibility
+- **Inline action buttons**: Quick-action buttons on reminder notifications:
+  - "Snooze 15m" - snooze for 15 minutes
+  - "Snooze 1h" - snooze for 1 hour
+  - "Done" - dismiss the reminder
+
+### Changed
+- Reminder notifications now use HTML formatting for cleaner display
+- Buttons replace the snooze hint text for a cleaner, more interactive experience
+
 ## [1.2.0] - 2025-01-15
 
 ### Added

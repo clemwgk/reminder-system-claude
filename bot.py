@@ -22,9 +22,10 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import yaml
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -924,6 +925,9 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.3.0 (Jan 2025)\n"
+            "• Pop formatting - bold reminder notifications\n"
+            "• Inline buttons - Snooze 15m, Snooze 1h, Done\n\n"
             "v1.2.0 (Jan 2025)\n"
             "• /edit command - edit reminder text\n"
             "• Reply-to-edit - reply to bot message to edit/cancel/snooze\n"
@@ -931,13 +935,11 @@ class ReminderBot:
             "v1.1.0 (Jan 2025)\n"
             "• Shared reminders ('remind us')\n"
             "• /snooze command\n"
-            "• Natural language cancel/delete\n"
-            "• Smart context parsing\n\n"
+            "• Natural language cancel/delete\n\n"
             "v1.0.0 (Jan 2025)\n"
             "• Initial release\n"
             "• Natural language reminders\n"
-            "• Category-based scheduling\n"
-            "• Multi-user support"
+            "• Category-based scheduling"
         )
         await update.message.reply_text(changelog)
 
@@ -1301,6 +1303,53 @@ class ReminderBot:
                 f"ID: [{reminder_id}]"
             )
 
+    async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button presses."""
+        query = update.callback_query
+        await query.answer()  # Acknowledge the callback
+
+        user_id = query.from_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        data = query.data  # e.g., "snooze_15_123" or "done_123"
+        parts = data.split("_")
+
+        if len(parts) < 2:
+            return
+
+        action = parts[0]
+
+        if action == "snooze" and len(parts) >= 3:
+            # snooze_15_123 or snooze_60_123
+            minutes = int(parts[1])
+            reminder_id = int(parts[2])
+            new_time = self._now() + timedelta(minutes=minutes)
+
+            if self.db.snooze_reminder(reminder_id, new_time) or self.db.delay_reminder(reminder_id, new_time):
+                # Update the message to show it was snoozed
+                await query.edit_message_text(
+                    f"⏰ <b>Snoozed</b> for {minutes} minutes\n\n"
+                    f"New time: {new_time.strftime('%H:%M')}\n\n"
+                    f"<i>(ID: {reminder_id})</i>",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.edit_message_text(
+                    f"Could not snooze reminder [{reminder_id}] - it may have been cancelled.",
+                    parse_mode="HTML",
+                )
+
+        elif action == "done" and len(parts) >= 2:
+            # done_123
+            reminder_id = int(parts[1])
+            # Mark as acknowledged by removing the buttons
+            await query.edit_message_text(
+                f"✓ <b>Done</b>\n\n"
+                f"<i>(ID: {reminder_id})</i>",
+                parse_mode="HTML",
+            )
+
     async def send_due_reminders(self, app: Application):
         """Check for and send due reminders. Called by scheduler."""
         current_time = self._now()
@@ -1318,16 +1367,35 @@ class ReminderBot:
                     recipients = [reminder["created_by"]]
 
                 shared_note = " 👥" if notify_all else ""
+                reminder_id = reminder['id']
+
+                # Pop formatting with HTML
                 message = (
-                    f"🔔 Reminder!{shared_note}\n\n"
+                    f"🔔 <b>Reminder</b>{shared_note}\n\n"
                     f"{reminder['task']}\n\n"
-                    f"(ID: {reminder['id']})\n"
-                    f"💡 /snooze {reminder['id']} to snooze 15 min"
+                    f"<i>(ID: {reminder_id})</i>"
                 )
+
+                # Inline keyboard buttons for quick actions
+                keyboard = [
+                    [
+                        InlineKeyboardButton("⏰ Snooze 15m", callback_data=f"snooze_15_{reminder_id}"),
+                        InlineKeyboardButton("⏰ Snooze 1h", callback_data=f"snooze_60_{reminder_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("✓ Done", callback_data=f"done_{reminder_id}"),
+                    ],
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
 
                 for user_id in recipients:
                     try:
-                        await app.bot.send_message(chat_id=user_id, text=message)
+                        await app.bot.send_message(
+                            chat_id=user_id,
+                            text=message,
+                            parse_mode="HTML",
+                            reply_markup=reply_markup,
+                        )
                         self.logger.info(f"Sent reminder {reminder['id']} to user {user_id}")
                     except Exception as e:
                         self.logger.error(f"Failed to send reminder {reminder['id']} to {user_id}: {e}")
@@ -1350,6 +1418,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("snooze", self.snooze_reminder))
         app.add_handler(CommandHandler("edit", self.edit_reminder))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
+        app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
