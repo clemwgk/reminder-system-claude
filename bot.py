@@ -1343,9 +1343,12 @@ class ReminderBot:
         elif action == "done" and len(parts) >= 2:
             # done_123
             reminder_id = int(parts[1])
-            # Mark as acknowledged by removing the buttons
+            # Get reminder to preserve the task text
+            reminder = self.db.get_reminder(reminder_id)
+            task_text = reminder["task"] if reminder else "reminder"
+            # Mark as acknowledged by removing the buttons but keeping the text
             await query.edit_message_text(
-                f"✓ <b>Done</b>\n\n"
+                f"[✓ Done] {task_text}\n\n"
                 f"<i>(ID: {reminder_id})</i>",
                 parse_mode="HTML",
             )
