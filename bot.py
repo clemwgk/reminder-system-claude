@@ -704,6 +704,21 @@ class ReminderBot:
         """Get current time in configured timezone."""
         return datetime.now(self.tz)
 
+    async def _get_reminder_id_from_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+        """Extract reminder ID from a replied-to bot message."""
+        if not update.message.reply_to_message:
+            return None
+        replied_msg = update.message.reply_to_message
+        # Check if replying to a bot message
+        bot_user = await context.bot.get_me()
+        if not replied_msg.from_user or replied_msg.from_user.id != bot_user.id:
+            return None
+        # Try to extract reminder ID from the message
+        id_match = re.search(r'(?:ID[:\s]*\[?|🆔\s*)(\d+)\]?', replied_msg.text or "")
+        if id_match:
+            return int(id_match.group(1))
+        return None
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command."""
         user_id = update.effective_user.id
@@ -792,14 +807,23 @@ class ReminderBot:
         if not self._is_authorized(update.effective_user.id):
             return
 
-        if not context.args:
-            await update.message.reply_text("Usage: /cancel <reminder_id>")
-            return
+        reminder_id = None
 
-        try:
-            reminder_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("Invalid reminder ID. Use /list to see IDs.")
+        # Check if replying to a bot message (get ID from reply)
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+        if reply_id:
+            reminder_id = reply_id
+        elif context.args:
+            try:
+                reminder_id = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("Invalid reminder ID. Use /list to see IDs.")
+                return
+        else:
+            await update.message.reply_text(
+                "Usage: /cancel <reminder_id>\n"
+                "Or reply to a reminder message with /cancel"
+            )
             return
 
         if self.db.cancel_reminder(reminder_id):
@@ -814,18 +838,36 @@ class ReminderBot:
         if not self._is_authorized(update.effective_user.id):
             return
 
-        if len(context.args) < 2:
+        reminder_id = None
+        hours = None
+
+        # Check if replying to a bot message (get ID from reply)
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+        if reply_id:
+            reminder_id = reply_id
+            # Args are just hours when replying
+            if context.args:
+                try:
+                    hours = float(context.args[0])
+                except ValueError:
+                    await update.message.reply_text("Invalid hours. Use: /delay <hours>")
+                    return
+            else:
+                await update.message.reply_text("Usage: /delay <hours> (when replying)")
+                return
+        elif len(context.args) >= 2:
+            try:
+                reminder_id = int(context.args[0])
+                hours = float(context.args[1])
+            except ValueError:
+                await update.message.reply_text("Invalid input. Use: /delay <id> <hours>")
+                return
+        else:
             await update.message.reply_text(
                 "Usage: /delay <reminder_id> <hours>\n"
-                "Example: /delay 5 24  (delay reminder 5 by 24 hours)"
+                "Example: /delay 5 24  (delay reminder 5 by 24 hours)\n"
+                "Or reply to a reminder message with /delay <hours>"
             )
-            return
-
-        try:
-            reminder_id = int(context.args[0])
-            hours = float(context.args[1])
-        except ValueError:
-            await update.message.reply_text("Invalid input. Use: /delay <id> <hours>")
             return
 
         # Get current reminder time and add delay
@@ -853,19 +895,34 @@ class ReminderBot:
         if not self._is_authorized(update.effective_user.id):
             return
 
-        if not context.args:
+        reminder_id = None
+        minutes = 15  # default
+
+        # Check if replying to a bot message (get ID from reply)
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+        if reply_id:
+            reminder_id = reply_id
+            # Args are just minutes when replying
+            if context.args:
+                try:
+                    minutes = int(context.args[0])
+                except ValueError:
+                    pass
+        elif context.args:
+            # Standard usage: /snooze <id> [minutes]
+            try:
+                reminder_id = int(context.args[0])
+                minutes = int(context.args[1]) if len(context.args) > 1 else 15
+            except ValueError:
+                await update.message.reply_text("Invalid input. Use: /snooze <id> [minutes]")
+                return
+        else:
             await update.message.reply_text(
                 "Usage: /snooze <reminder_id> [minutes]\n"
                 "Example: /snooze 5       (snooze 15 mins)\n"
-                "Example: /snooze 5 30    (snooze 30 mins)"
+                "Example: /snooze 5 30    (snooze 30 mins)\n"
+                "Or reply to a reminder message with /snooze [minutes]"
             )
-            return
-
-        try:
-            reminder_id = int(context.args[0])
-            minutes = int(context.args[1]) if len(context.args) > 1 else 15
-        except ValueError:
-            await update.message.reply_text("Invalid input. Use: /snooze <id> [minutes]")
             return
 
         # Calculate new time from now
@@ -892,20 +949,33 @@ class ReminderBot:
         if not self._is_authorized(update.effective_user.id):
             return
 
-        if len(context.args) < 2:
+        reminder_id = None
+        new_task = None
+
+        # Check if replying to a bot message (get ID from reply)
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+        if reply_id:
+            reminder_id = reply_id
+            # All args are the new task text when replying
+            if context.args:
+                new_task = " ".join(context.args)
+            else:
+                await update.message.reply_text("Usage: /edit <new text> (when replying)")
+                return
+        elif len(context.args) >= 2:
+            try:
+                reminder_id = int(context.args[0])
+            except ValueError:
+                await update.message.reply_text("Invalid reminder ID.")
+                return
+            new_task = " ".join(context.args[1:])
+        else:
             await update.message.reply_text(
                 "Usage: /edit <reminder_id> <new text>\n"
-                "Example: /edit 48 buy infant formula by 23 Jan"
+                "Example: /edit 48 buy infant formula by 23 Jan\n"
+                "Or reply to a reminder message with /edit <new text>"
             )
             return
-
-        try:
-            reminder_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("Invalid reminder ID.")
-            return
-
-        new_task = " ".join(context.args[1:])
 
         if self.db.modify_reminder(reminder_id, new_task=new_task):
             await update.message.reply_text(
@@ -1372,11 +1442,13 @@ class ReminderBot:
                 shared_note = " 👥" if notify_all else ""
                 reminder_id = reminder['id']
 
-                # Pop formatting with HTML
+                # Pop formatting with box-style header
                 message = (
-                    f"🔔 <b>Reminder</b>{shared_note}\n\n"
-                    f"{reminder['task']}\n\n"
-                    f"<i>(ID: {reminder_id})</i>"
+                    f"┏━━━━━━━━━━━━━━━━━━━━━━━┓\n"
+                    f"┃  🔔 <b>Reminder</b>{shared_note}        ┃\n"
+                    f"┗━━━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+                    f"📌 {reminder['task']}\n\n"
+                    f"🆔 {reminder_id}"
                 )
 
                 # Inline keyboard buttons for quick actions
