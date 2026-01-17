@@ -841,31 +841,38 @@ class ReminderBot:
         reminder_id = None
         hours = None
 
-        # Check if replying to a bot message (get ID from reply)
         reply_id = await self._get_reminder_id_from_reply(update, context)
-        if reply_id:
-            reminder_id = reply_id
-            # Args are just hours when replying
-            if context.args:
-                try:
-                    hours = float(context.args[0])
-                except ValueError:
-                    await update.message.reply_text("Invalid hours. Use: /delay <hours>")
-                    return
-            else:
-                await update.message.reply_text("Usage: /delay <hours> (when replying)")
-                return
-        elif len(context.args) >= 2:
+
+        if len(context.args) >= 2:
+            # Two args: /delay <id> <hours> - explicit, ignore reply context
             try:
                 reminder_id = int(context.args[0])
                 hours = float(context.args[1])
             except ValueError:
                 await update.message.reply_text("Invalid input. Use: /delay <id> <hours>")
                 return
+        elif len(context.args) == 1:
+            if reply_id:
+                # One arg + reply: arg is hours, ID from reply
+                reminder_id = reply_id
+                try:
+                    hours = float(context.args[0])
+                except ValueError:
+                    await update.message.reply_text("Invalid hours. Use: /delay <hours>")
+                    return
+            else:
+                # One arg, no reply: ambiguous - is it ID or hours?
+                await update.message.reply_text(
+                    "Ambiguous input. Please specify both ID and hours:\n"
+                    "/delay <id> <hours>\n\n"
+                    "Or reply to a reminder message with /delay <hours>"
+                )
+                return
         else:
+            # No args: always need hours
             await update.message.reply_text(
                 "Usage: /delay <reminder_id> <hours>\n"
-                "Example: /delay 5 24  (delay reminder 5 by 24 hours)\n"
+                "Example: /delay 5 24  (delay by 24 hours)\n\n"
                 "Or reply to a reminder message with /delay <hours>"
             )
             return
