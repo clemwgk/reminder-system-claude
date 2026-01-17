@@ -92,25 +92,25 @@ Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapor
 User input: "{user_input}"
 
 Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "action": one of "create", "cancel", "modify", "duplicate", or "list"
+- "action": one of "create", "cancel", "modify", or "list"
 - "task": the thing to be reminded about (string, required for create/modify, null for others)
 - "category": one of "general", "bill", or "food_expiry" (for create/modify)
 - "scheduled_time": ISO format datetime if a specific time was mentioned, or null
 - "time_hint": the original time reference from the user, or null
-- "target_id": the ID of an existing reminder to cancel/modify/duplicate, or null
+- "target_id": the ID of an existing reminder to cancel/modify, or null
 - "shared": true if the user said "remind us" or wants to notify all users, false otherwise
 
 ACTION DETECTION RULES (VERY IMPORTANT):
-- "create": User wants a NEW reminder (e.g., "remind me to...", "set a reminder for...")
+- "create": User wants a NEW reminder (e.g., "remind me to...", "set a reminder for..."). This is the DEFAULT action.
 - "cancel": User wants to REMOVE/DELETE a reminder (e.g., "remove that", "cancel reminder 5", "delete the last one")
 - "modify": User wants to CHANGE an existing reminder (e.g., "change reminder 3 to 5pm", "update the last one")
-- "duplicate": User wants to COPY an existing reminder (e.g., "set one more of the same", "duplicate that", "another one like the last")
 - "list": User wants to SEE their reminders (e.g., "show my reminders", "what reminders do I have")
+
+IMPORTANT: If the user's message could be a new reminder task, always use "create". Only use cancel/modify/list when explicitly requested.
 
 TARGET IDENTIFICATION:
 - If user says "the last one", "that one", "that reminder", "the previous one" → use the most recent reminder ID from context
 - If user gives an ID number (e.g., "reminder 5", "cancel 3") → use that ID
-- For duplicate: copy the task/category from the target, but use any new time specified
 
 SHARED REMINDERS:
 - If user says "remind us", "we need to", "remind both of us" → set shared: true
@@ -122,18 +122,24 @@ Rules for category detection:
 - "general": everything else
 
 Rules for scheduled_time:
-- "tomorrow" = next day at 09:00
+- "tomorrow" or "tmr" = next day at 09:00
 - "tomorrow morning" = next day at 09:00
 - "tomorrow evening" = next day at 18:00
-- "next week" = same day next week at 09:00
+- "next week" or "nxt wk" = same day next week at 09:00
 - "in X hours/minutes" = current time + X
 - If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
 - If no time mentioned at all, set to null (the system will apply category defaults)
 
+Common shorthands to recognize:
+- "tmr" = tomorrow
+- "nxt wk" = next week
+- "2nite" or "tonite" = tonight (same day at 20:00)
+- "aft" = afternoon (same day at 14:00)
+
 Example responses:
 {{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false}}
 {{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false}}
-{{"action": "duplicate", "task": "check milk expiry", "category": "food_expiry", "scheduled_time": "2024-01-15T19:30:00", "time_hint": "7:30pm", "target_id": 4, "shared": false}}
+{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false}}
 """
 
 
@@ -762,20 +768,23 @@ class ReminderBot:
             "Modifying reminders (natural language):\n"
             "• 'cancel that last reminder'\n"
             "• 'remove reminder 5'\n"
-            "• 'duplicate that for 7pm'\n"
             "• 'change reminder 3 to tomorrow'\n\n"
             "Commands:\n"
             "/list - Show all pending reminders\n"
-            "/cancel <id> - Cancel a reminder\n"
+            "/cancel <id> [id2...] - Cancel reminder(s)\n"
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
             "/edit <id> <text> - Edit reminder text\n"
+            "/copy <id> <time> - Copy reminder to new time\n"
             "/changelog - Show recent updates\n"
             "/help - Show this message\n\n"
             "Quick reply:\n"
             "Reply to any bot message to act on that reminder:\n"
-            "• Reply with /cancel, /snooze, /delay, /edit\n"
+            "• Reply with /cancel, /snooze, /delay, /edit, /copy\n"
             "• Or just type new text to edit the reminder\n\n"
+            "Time shorthands:\n"
+            "• tmr = tomorrow\n"
+            "• nxt wk = next week\n\n"
             "Categories & defaults:\n"
             "• Bills → Saturday 9 AM\n"
             "• Food expiry → Day before, 9 AM & 6 PM\n"
@@ -804,35 +813,41 @@ class ReminderBot:
         await update.message.reply_text("\n".join(lines))
 
     async def cancel_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /cancel command."""
+        """Handle /cancel command - supports multiple IDs."""
         if not self._is_authorized(update.effective_user.id):
             return
 
-        reminder_id = None
+        reminder_ids = []
 
         # Check if replying to a bot message (get ID from reply)
         reply_id = await self._get_reminder_id_from_reply(update, context)
-        if reply_id:
-            reminder_id = reply_id
+        if reply_id and not context.args:
+            reminder_ids = [reply_id]
         elif context.args:
-            try:
-                reminder_id = int(context.args[0])
-            except ValueError:
-                await update.message.reply_text("Invalid reminder ID. Use /list to see IDs.")
-                return
+            # Parse all args as IDs
+            for arg in context.args:
+                try:
+                    reminder_ids.append(int(arg))
+                except ValueError:
+                    await update.message.reply_text(f"Invalid reminder ID: {arg}")
+                    return
         else:
             await update.message.reply_text(
-                "Usage: /cancel <reminder_id>\n"
+                "Usage: /cancel <id> [id2] [id3] ...\n"
+                "Example: /cancel 57 58 59\n"
                 "Or reply to a reminder message with /cancel"
             )
             return
 
-        if self.db.cancel_reminder(reminder_id):
-            await update.message.reply_text(f"Reminder [{reminder_id}] cancelled.")
-        else:
-            await update.message.reply_text(
-                f"Reminder [{reminder_id}] not found or already sent."
-            )
+        # Cancel each reminder and collect results
+        results = []
+        for rid in reminder_ids:
+            if self.db.cancel_reminder(rid):
+                results.append(f"[{rid}] cancelled")
+            else:
+                results.append(f"[{rid}] not found or already sent")
+
+        await update.message.reply_text("\n".join(results))
 
     async def delay_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /delay command."""
@@ -1006,6 +1021,106 @@ class ReminderBot:
                 f"Reminder [{reminder_id}] not found or already sent.\n"
                 f"(Only pending reminders can be edited)"
             )
+
+    async def copy_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /copy command - duplicate a pending reminder with new time."""
+        if not self._is_authorized(update.effective_user.id):
+            return
+
+        reminder_id = None
+        time_text = None
+
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+
+        if len(context.args) >= 2:
+            # Two+ args: /copy <id> <time text> - explicit ID
+            try:
+                reminder_id = int(context.args[0])
+                time_text = " ".join(context.args[1:])
+            except ValueError:
+                await update.message.reply_text("Invalid reminder ID.")
+                return
+        elif len(context.args) == 1:
+            if reply_id:
+                # One arg + reply: arg is time text, ID from reply
+                reminder_id = reply_id
+                time_text = context.args[0]
+            else:
+                # One arg, no reply: ambiguous
+                await update.message.reply_text(
+                    "Ambiguous input. Please specify ID and time:\n"
+                    "/copy <id> <time>\n\n"
+                    "Or reply to a reminder message with /copy <time>"
+                )
+                return
+        elif reply_id:
+            # No args + reply: use category default time
+            reminder_id = reply_id
+            time_text = None
+        else:
+            await update.message.reply_text(
+                "Usage: /copy <id> <time> or reply with /copy [time]\n"
+                "Examples:\n"
+                "  /copy 48 tomorrow\n"
+                "  /copy 48 next week\n"
+                "  Reply + /copy 5pm"
+            )
+            return
+
+        # Get the original reminder (must be pending)
+        original = self.db.get_reminder(reminder_id)
+        if not original:
+            await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+            return
+        if original["status"] != "pending":
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] is not pending.\n"
+                f"Only pending reminders can be copied."
+            )
+            return
+
+        current_time = self._now()
+        user_id = update.effective_user.id
+
+        # Parse time using LLM if provided, otherwise use category defaults
+        if time_text:
+            result = await self.llm.parse_reminder(f"remind me {time_text}", current_time)
+            if "error" in result:
+                await update.message.reply_text(f"Couldn't parse time: {time_text}")
+                return
+            scheduled_time_str = result.get("scheduled_time")
+            if scheduled_time_str:
+                try:
+                    scheduled_time = datetime.fromisoformat(scheduled_time_str)
+                    if scheduled_time.tzinfo is None:
+                        scheduled_time = scheduled_time.replace(tzinfo=self.tz)
+                except (ValueError, TypeError):
+                    scheduled_time = None
+            else:
+                scheduled_time = None
+        else:
+            scheduled_time = None
+
+        # Resolve final time using category defaults if needed
+        category = original["category"]
+        final_time = self.scheduler.resolve_time(category, scheduled_time, current_time)
+        if isinstance(final_time, list):
+            final_time = final_time[0]
+
+        # Create the copy
+        new_id = self.db.add_reminder(
+            original["task"],
+            category,
+            final_time,
+            user_id,
+            notify_all=bool(original.get("notify_all", 0))
+        )
+
+        await update.message.reply_text(
+            f"Copied reminder [{reminder_id}] → [{new_id}]\n"
+            f"'{original['task']}'\n\n"
+            f"Scheduled: {final_time.strftime('%A %d %B, %H:%M')}"
+        )
 
     async def changelog_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /changelog command - show recent changes."""
@@ -1295,50 +1410,6 @@ class ReminderBot:
                 )
             return
 
-        elif action == "duplicate":
-            # Duplicate an existing reminder with optional new time
-            if not target_id:
-                await update.message.reply_text(
-                    "I couldn't figure out which reminder to duplicate.\n"
-                    "Try: 'duplicate reminder 5 for 7pm'"
-                )
-                return
-
-            # Get the original reminder
-            original = self.db.get_reminder(target_id)
-            if not original:
-                await update.message.reply_text(
-                    f"Reminder [{target_id}] not found."
-                )
-                return
-
-            # Use task/category from original, but new time if specified
-            task = result.get("task") or original["task"]
-            category = result.get("category") or original["category"]
-            scheduled_time_str = result.get("scheduled_time")
-
-            scheduled_time = None
-            if scheduled_time_str:
-                try:
-                    scheduled_time = datetime.fromisoformat(scheduled_time_str)
-                    if scheduled_time.tzinfo is None:
-                        scheduled_time = scheduled_time.replace(tzinfo=self.tz)
-                except (ValueError, TypeError):
-                    pass
-
-            # Resolve final time
-            final_time = self.scheduler.resolve_time(category, scheduled_time, current_time)
-            if isinstance(final_time, list):
-                final_time = final_time[0]  # Just take first time for duplicates
-
-            new_id = self.db.add_reminder(task, category, final_time, user_id, notify_all=shared)
-            await update.message.reply_text(
-                f"Duplicated reminder [{target_id}] → [{new_id}]\n"
-                f"'{task}'\n"
-                f"Scheduled: {final_time.strftime('%A %d %B, %H:%M')}"
-            )
-            return
-
         # Default: CREATE action
         task = result.get("task", user_input)
         category = result.get("category", "general")
@@ -1512,6 +1583,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("delay", self.delay_reminder))
         app.add_handler(CommandHandler("snooze", self.snooze_reminder))
         app.add_handler(CommandHandler("edit", self.edit_reminder))
+        app.add_handler(CommandHandler("copy", self.copy_reminder))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
         app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(
