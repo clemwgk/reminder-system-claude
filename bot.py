@@ -898,29 +898,41 @@ class ReminderBot:
         reminder_id = None
         minutes = 15  # default
 
-        # Check if replying to a bot message (get ID from reply)
         reply_id = await self._get_reminder_id_from_reply(update, context)
-        if reply_id:
-            reminder_id = reply_id
-            # Args are just minutes when replying
-            if context.args:
-                try:
-                    minutes = int(context.args[0])
-                except ValueError:
-                    pass
-        elif context.args:
-            # Standard usage: /snooze <id> [minutes]
+
+        if len(context.args) >= 2:
+            # Two args: /snooze <id> <minutes> - explicit, ignore reply context
             try:
                 reminder_id = int(context.args[0])
-                minutes = int(context.args[1]) if len(context.args) > 1 else 15
+                minutes = int(context.args[1])
             except ValueError:
                 await update.message.reply_text("Invalid input. Use: /snooze <id> [minutes]")
                 return
+        elif len(context.args) == 1:
+            if reply_id:
+                # One arg + reply: arg is minutes, ID from reply
+                reminder_id = reply_id
+                try:
+                    minutes = int(context.args[0])
+                except ValueError:
+                    await update.message.reply_text("Invalid minutes. Use: /snooze <minutes>")
+                    return
+            else:
+                # One arg, no reply: ambiguous - is it ID or minutes?
+                await update.message.reply_text(
+                    "Ambiguous input. Please specify both ID and minutes:\n"
+                    "/snooze <id> <minutes>\n\n"
+                    "Or reply to a reminder message with /snooze <minutes>"
+                )
+                return
+        elif reply_id:
+            # No args + reply: use reply ID with default 15 minutes
+            reminder_id = reply_id
         else:
+            # No args, no reply: show usage
             await update.message.reply_text(
                 "Usage: /snooze <reminder_id> [minutes]\n"
-                "Example: /snooze 5       (snooze 15 mins)\n"
-                "Example: /snooze 5 30    (snooze 30 mins)\n"
+                "Example: /snooze 5 30    (snooze 30 mins)\n\n"
                 "Or reply to a reminder message with /snooze [minutes]"
             )
             return
