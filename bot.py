@@ -1130,6 +1130,11 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.4.0 (Jan 2025)\n"
+            "• /copy command - duplicate reminders with new time\n"
+            "• /cancel now supports multiple IDs\n"
+            "• Time shorthands: tmr, nxt wk, etc.\n"
+            "• Improved direct reply for all commands\n\n"
             "v1.3.0 (Jan 2025)\n"
             "• Pop formatting - bold reminder notifications\n"
             "• Inline buttons - Snooze 15m, Snooze 1h, Done\n\n"
@@ -1142,9 +1147,7 @@ class ReminderBot:
             "• /snooze command\n"
             "• Natural language cancel/delete\n\n"
             "v1.0.0 (Jan 2025)\n"
-            "• Initial release\n"
-            "• Natural language reminders\n"
-            "• Category-based scheduling"
+            "• Initial release"
         )
         await update.message.reply_text(changelog)
 
