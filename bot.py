@@ -714,7 +714,8 @@ class ReminderBot:
         if not replied_msg.from_user or replied_msg.from_user.id != bot_user.id:
             return None
         # Try to extract reminder ID from the message
-        id_match = re.search(r'(?:ID[:\s]*\[?|🆔\s*)(\d+)\]?', replied_msg.text or "")
+        # Matches: "ID: [48]", "(ID: 48)", "ID: 48"
+        id_match = re.search(r'ID[:\s]*\[?(\d+)\]?', replied_msg.text or "")
         if id_match:
             return int(id_match.group(1))
         return None
@@ -1461,13 +1462,13 @@ class ReminderBot:
                 shared_note = " 👥" if notify_all else ""
                 reminder_id = reminder['id']
 
-                # Pop formatting with box-style header
+                # Pop formatting with horizontal lines
                 message = (
-                    f"┏━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-                    f"┃  🔔 <b>Reminder</b>{shared_note}        ┃\n"
-                    f"┗━━━━━━━━━━━━━━━━━━━━━━━┛\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔔 <b>Reminder</b>{shared_note}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     f"📌 {reminder['task']}\n\n"
-                    f"🆔 {reminder_id}"
+                    f"(ID: {reminder_id})"
                 )
 
                 # Inline keyboard buttons for quick actions
