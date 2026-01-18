@@ -1538,9 +1538,9 @@ class ReminderBot:
 
                 # Pop formatting with horizontal lines
                 message = (
-                    f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"━━━━━━━━━━━━━━━\n"
                     f"🔔 <b>Reminder</b>{shared_note}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"━━━━━━━━━━━━━━━\n\n"
                     f"📌 {reminder['task']}\n\n"
                     f"(ID: {reminder_id})"
                 )
