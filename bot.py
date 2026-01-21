@@ -136,10 +136,29 @@ Common shorthands to recognize:
 - "2nite" or "tonite" = tonight (same day at 20:00)
 - "aft" = afternoon (same day at 14:00)
 
+LANGUAGE NOTE (Singaporean English):
+Users may use Singaporean English patterns. Key differences from US/UK English:
+
+1. PREPOSITION OMISSION: "to", "on", "at" often dropped before times/places
+   - "remind me Friday" = "remind me on Friday"
+   - "go back Florence" = "go back to Florence"
+   - "reach there 3pm" = "reach there at 3pm"
+
+2. SUBJECT DROPPING in conditionals/context:
+   - "if go back" = "if I go back"
+   - "need buy groceries" = "I need to buy groceries"
+
+3. TIME/PLACE FRONTING: Time often comes first without preposition
+   - "Friday remind me to..." = "On Friday, remind me to..."
+   - "Tomorrow if got time..." = "Tomorrow, if I have time..."
+
+Always extract the time reference even when prepositions are missing.
+
 Example responses:
 {{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false}}
 {{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false}}
 {{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false}}
+{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false}}
 """
 
 
