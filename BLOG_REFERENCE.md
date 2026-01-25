@@ -6,6 +6,82 @@ This document captures the key moments from building a Telegram reminder bot usi
 
 **Tech Stack:** Python, Telegram Bot API, SQLite, Gemini LLM (for natural language parsing)
 
+**Timeline:** ~2 days from first conversation to working MVP (deployed and handling reminders)
+
+---
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────┐
+│  You + Partner (Telegram on phones)     │
+└────────────────────┬────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────┐
+│       Telegram Bot (Python)             │
+│                                         │
+│  - Intake: natural language → LLM parse │
+│  - Management: /list, /delay, /cancel,  │
+│                /snooze, /edit, /copy    │
+│  - Delivery: sends reminders when due   │
+└───────┬─────────────┬─────────────┬─────┘
+        │             │             │
+        ▼             ▼             ▼
+┌───────────┐  ┌───────────┐  ┌───────────┐
+│  Gemini   │  │  SQLite   │  │  config.  │
+│   API     │  │    DB     │  │   yaml    │
+│(for parse)│  │           │  │           │
+└───────────┘  └───────────┘  └───────────┘
+
+Hosted on: Google Cloud Free Tier
+```
+
+*This diagram was generated early in the conversation and helped me (a non-engineer) understand the system structure.*
+
+---
+
+## Working with Claude Code
+
+### Speed to MVP
+
+| Milestone | Time from Start |
+|-----------|-----------------|
+| First working bot commit | 0 |
+| Deployment guide complete | ~1 hour |
+| LLM provider settled (Gemini 2.5-flash-lite) | **~2 days** |
+| Full feature set (v1.4.0) | ~11 days |
+
+**Key insight:** The ~2 day mark is when I considered the MVP "done" - the bot was deployed, the free tier was figured out, and it was reliably parsing reminders.
+
+### What Made It Easy
+
+1. **Clear implementation instructions**: Claude Code provided copy-paste commands for deployment, systemd service setup, and config structure
+
+2. **Architecture diagram upfront**: Before writing code, Claude Code sketched the system architecture - this helped me understand what we were building
+
+3. **Iterative debugging with screenshots**: I'd share a screenshot of a bug, Claude Code would diagnose and propose a fix, I'd refine based on domain knowledge
+
+4. **Constraints were respected**:
+   - "Free tier only" → Gemini 2.5-flash-lite (1000 req/day)
+   - "Privacy-conscious" → Self-hosted SQLite, no third-party logging
+   - "Mobile-first" → Shortened UI elements after seeing real device screenshots
+   - "Singaporean users" → Added language patterns to LLM prompt
+
+### The Workflow
+
+```
+Me: [describes problem or shares screenshot]
+     ↓
+Claude Code: [diagnoses, proposes fix with tradeoffs]
+     ↓
+Me: [refines based on domain knowledge]
+     ↓
+Claude Code: [implements, commits, provides deploy command]
+     ↓
+Me: git pull && sudo systemctl restart reminder-bot
+```
+
 ---
 
 ## 1. Chronological Summary
