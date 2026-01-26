@@ -16,7 +16,7 @@ import os
 import re
 import sqlite3
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -432,6 +432,11 @@ class ReminderDB:
                 conn.execute("ALTER TABLE reminders ADD COLUMN notify_all INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # Add acknowledged_at column for tracking Done button presses
+            try:
+                conn.execute("ALTER TABLE reminders ADD COLUMN acknowledged_at TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             conn.commit()
 
     def add_reminder(
@@ -570,7 +575,7 @@ class ReminderDB:
             cursor = conn.execute(
                 """
                 UPDATE reminders
-                SET scheduled_time = ?, status = 'pending', sent_at = NULL
+                SET scheduled_time = ?, status = 'pending', sent_at = NULL, acknowledged_at = NULL
                 WHERE id = ? AND status = 'sent'
                 """,
                 (new_time.isoformat(), reminder_id),
@@ -606,6 +611,68 @@ class ReminderDB:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def acknowledge_reminder(self, reminder_id: int) -> bool:
+        """Mark a reminder as acknowledged (Done button pressed). Returns True if successful."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminders
+                SET acknowledged_at = ?
+                WHERE id = ? AND status = 'sent'
+                """,
+                (datetime.now().isoformat(), reminder_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_unacknowledged_reminders(self, user_id: int) -> list[dict]:
+        """Get sent reminders that haven't been acknowledged (for recap)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status = 'sent'
+                AND acknowledged_at IS NULL
+                AND (created_by = ? OR notify_all = 1)
+                ORDER BY sent_at ASC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_pending_reminders_for_user(self, user_id: int) -> list[dict]:
+        """Get pending reminders visible to a specific user (own + shared)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status = 'pending'
+                AND (created_by = ? OR notify_all = 1)
+                ORDER BY scheduled_time ASC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_todays_reminders_for_user(self, user_id: int, today_start: datetime, today_end: datetime) -> list[dict]:
+        """Get pending reminders scheduled for today, visible to a specific user."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status = 'pending'
+                AND (created_by = ? OR notify_all = 1)
+                AND scheduled_time >= ?
+                AND scheduled_time < ?
+                ORDER BY scheduled_time ASC
+                """,
+                (user_id, today_start.isoformat(), today_end.isoformat()),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
 
 # =============================================================================
@@ -725,6 +792,10 @@ class ReminderBot:
         """Check if user is authorized."""
         return user_id in self.authorized_users
 
+    def _can_access(self, user_id: int, reminder: dict) -> bool:
+        """Check if user can access a reminder (own reminders + shared reminders)."""
+        return reminder["created_by"] == user_id or reminder.get("notify_all", 0) == 1
+
     def _now(self) -> datetime:
         """Get current time in configured timezone."""
         return datetime.now(self.tz)
@@ -789,7 +860,8 @@ class ReminderBot:
             "• 'remove reminder 5'\n"
             "• 'change reminder 3 to tomorrow'\n\n"
             "Commands:\n"
-            "/list - Show all pending reminders\n"
+            "/list - Show your pending reminders\n"
+            "/summary - Show daily summary (today + unacknowledged)\n"
             "/cancel <id> [id2...] - Cancel reminder(s)\n"
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
@@ -809,15 +881,18 @@ class ReminderBot:
             "• Food expiry → Day before, 9 AM & 6 PM\n"
             "• General → Next day 9 AM\n\n"
             "Shared reminders:\n"
-            "Say 'remind us' instead of 'remind me' to notify all users."
+            "Say 'remind us' instead of 'remind me' to notify all users.\n\n"
+            "Privacy:\n"
+            "You only see your own reminders + shared ones."
         )
 
     async def list_reminders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /list command."""
-        if not self._is_authorized(update.effective_user.id):
+        """Handle /list command - shows user's own reminders + shared reminders."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
             return
 
-        reminders = self.db.get_pending_reminders()
+        reminders = self.db.get_pending_reminders_for_user(user_id)
 
         if not reminders:
             await update.message.reply_text("No pending reminders.")
@@ -827,13 +902,15 @@ class ReminderBot:
         for r in reminders:
             scheduled = datetime.fromisoformat(r["scheduled_time"])
             time_str = scheduled.strftime("%a %d %b, %H:%M")
-            lines.append(f"[{r['id']}] {r['task']}\n    📅 {time_str}")
+            shared_marker = " 👥" if r.get("notify_all", 0) else ""
+            lines.append(f"[{r['id']}] {r['task']}{shared_marker}\n    📅 {time_str}")
 
         await update.message.reply_text("\n".join(lines))
 
     async def cancel_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /cancel command - supports multiple IDs."""
-        if not self._is_authorized(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
             return
 
         reminder_ids = []
@@ -858,19 +935,25 @@ class ReminderBot:
             )
             return
 
-        # Cancel each reminder and collect results
+        # Cancel each reminder and collect results (with ownership check)
         results = []
         for rid in reminder_ids:
-            if self.db.cancel_reminder(rid):
+            reminder = self.db.get_reminder(rid)
+            if not reminder:
+                results.append(f"[{rid}] not found")
+            elif not self._can_access(user_id, reminder):
+                results.append(f"[{rid}] not accessible")
+            elif self.db.cancel_reminder(rid):
                 results.append(f"[{rid}] cancelled")
             else:
-                results.append(f"[{rid}] not found or already sent")
+                results.append(f"[{rid}] already sent or cancelled")
 
         await update.message.reply_text("\n".join(results))
 
     async def delay_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /delay command."""
-        if not self._is_authorized(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
             return
 
         reminder_id = None
@@ -912,13 +995,18 @@ class ReminderBot:
             )
             return
 
-        # Get current reminder time and add delay
-        reminders = self.db.get_pending_reminders()
-        reminder = next((r for r in reminders if r["id"] == reminder_id), None)
+        # Get reminder and check ownership
+        reminder = self.db.get_reminder(reminder_id)
 
-        if not reminder:
+        if not reminder or reminder["status"] != "pending":
             await update.message.reply_text(
                 f"Reminder [{reminder_id}] not found or already sent."
+            )
+            return
+
+        if not self._can_access(user_id, reminder):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] not accessible."
             )
             return
 
@@ -934,7 +1022,8 @@ class ReminderBot:
 
     async def snooze_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /snooze command - snooze for 15 minutes (or custom duration)."""
-        if not self._is_authorized(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
             return
 
         reminder_id = None
@@ -979,6 +1068,20 @@ class ReminderBot:
             )
             return
 
+        # Check ownership before snoozing
+        reminder = self.db.get_reminder(reminder_id)
+        if not reminder:
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] not found."
+            )
+            return
+
+        if not self._can_access(user_id, reminder):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] not accessible."
+            )
+            return
+
         # Calculate new time from now
         new_time = self._now() + timedelta(minutes=minutes)
 
@@ -995,12 +1098,13 @@ class ReminderBot:
             )
         else:
             await update.message.reply_text(
-                f"Reminder [{reminder_id}] not found or already cancelled."
+                f"Reminder [{reminder_id}] already cancelled."
             )
 
     async def edit_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /edit command - edit the task text of a pending reminder."""
-        if not self._is_authorized(update.effective_user.id):
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
             return
 
         reminder_id = None
@@ -1031,15 +1135,29 @@ class ReminderBot:
             )
             return
 
+        # Check ownership before editing
+        reminder = self.db.get_reminder(reminder_id)
+        if not reminder:
+            await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+            return
+
+        if not self._can_access(user_id, reminder):
+            await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
+            return
+
+        if reminder["status"] != "pending":
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] already sent.\n"
+                f"(Only pending reminders can be edited)"
+            )
+            return
+
         if self.db.modify_reminder(reminder_id, new_task=new_task):
             await update.message.reply_text(
                 f"Reminder [{reminder_id}] updated:\n'{new_task}'"
             )
         else:
-            await update.message.reply_text(
-                f"Reminder [{reminder_id}] not found or already sent.\n"
-                f"(Only pending reminders can be edited)"
-            )
+            await update.message.reply_text("Failed to edit reminder.")
 
     async def copy_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /copy command - duplicate a pending reminder with new time."""
@@ -1086,10 +1204,14 @@ class ReminderBot:
             )
             return
 
-        # Get the original reminder (must be pending)
+        # Get the original reminder (must be pending and accessible)
+        user_id = update.effective_user.id
         original = self.db.get_reminder(reminder_id)
         if not original:
             await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+            return
+        if not self._can_access(user_id, original):
+            await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
             return
         if original["status"] != "pending":
             await update.message.reply_text(
@@ -1099,7 +1221,6 @@ class ReminderBot:
             return
 
         current_time = self._now()
-        user_id = update.effective_user.id
 
         # Parse time using LLM if provided, otherwise use category defaults
         if time_text:
@@ -1149,6 +1270,10 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.0 (Jan 2026)\n"
+            "• Daily summary - auto sent at 8 AM + /summary command\n"
+            "• Done button now marks reminders as acknowledged\n"
+            "• Privacy - you only see your own + shared reminders\n\n"
             "v1.4.0 (Jan 2025)\n"
             "• /copy command - duplicate reminders with new time\n"
             "• /cancel now supports multiple IDs\n"
@@ -1197,12 +1322,21 @@ class ReminderBot:
                 if id_match:
                     reminder_id = int(id_match.group(1))
 
+                    # Check ownership for all reply actions
+                    reminder = self.db.get_reminder(reminder_id)
+                    if not reminder:
+                        await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+                        return
+                    if not self._can_access(user_id, reminder):
+                        await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
+                        return
+
                     # Check what action the user wants
                     if user_input_lower.startswith("/cancel"):
                         if self.db.cancel_reminder(reminder_id):
                             await update.message.reply_text(f"Cancelled reminder [{reminder_id}].")
                         else:
-                            await update.message.reply_text(f"Reminder [{reminder_id}] not found or already sent.")
+                            await update.message.reply_text(f"Reminder [{reminder_id}] already sent or cancelled.")
                         return
 
                     elif user_input_lower.startswith("/snooze"):
@@ -1216,7 +1350,7 @@ class ReminderBot:
                                 f"New time: {new_time.strftime('%H:%M')}"
                             )
                         else:
-                            await update.message.reply_text(f"Reminder [{reminder_id}] not found or already cancelled.")
+                            await update.message.reply_text(f"Reminder [{reminder_id}] already cancelled.")
                         return
 
                     elif user_input_lower.startswith("/delay"):
@@ -1225,16 +1359,13 @@ class ReminderBot:
                         if len(parts) > 1:
                             try:
                                 hours = float(parts[1])
-                                # Get current scheduled time and add delay
-                                reminder = self.db.get_reminder(reminder_id)
-                                if reminder:
-                                    current_scheduled = datetime.fromisoformat(reminder["scheduled_time"])
-                                    new_time = current_scheduled + timedelta(hours=hours)
-                                    if self.db.delay_reminder(reminder_id, new_time):
-                                        await update.message.reply_text(
-                                            f"Reminder [{reminder_id}] delayed to {new_time.strftime('%a %d %b, %H:%M')}"
-                                        )
-                                        return
+                                current_scheduled = datetime.fromisoformat(reminder["scheduled_time"])
+                                new_time = current_scheduled + timedelta(hours=hours)
+                                if self.db.delay_reminder(reminder_id, new_time):
+                                    await update.message.reply_text(
+                                        f"Reminder [{reminder_id}] delayed to {new_time.strftime('%a %d %b, %H:%M')}"
+                                    )
+                                    return
                             except ValueError:
                                 pass
                         await update.message.reply_text("Usage: /delay <hours> (e.g., /delay 2)")
@@ -1282,7 +1413,7 @@ class ReminderBot:
             "list", "show", "show reminders", "show my reminders",
             "list reminders", "what reminders", "my reminders"
         ]:
-            reminders = self.db.get_pending_reminders()
+            reminders = self.db.get_pending_reminders_for_user(user_id)
             if not reminders:
                 await update.message.reply_text("No pending reminders.")
             else:
@@ -1364,8 +1495,8 @@ class ReminderBot:
 
         # Handle different actions
         if action == "list":
-            # Show pending reminders
-            reminders = self.db.get_pending_reminders()
+            # Show pending reminders (user's own + shared)
+            reminders = self.db.get_pending_reminders_for_user(user_id)
             if not reminders:
                 await update.message.reply_text("No pending reminders.")
             else:
@@ -1373,8 +1504,8 @@ class ReminderBot:
                 for r in reminders:
                     scheduled = datetime.fromisoformat(r["scheduled_time"])
                     time_str = scheduled.strftime("%a %d %b, %H:%M")
-                    shared_icon = "👥" if r.get("notify_all") else ""
-                    lines.append(f"[{r['id']}] {r['task']} {shared_icon}\n    📅 {time_str}")
+                    shared_icon = " 👥" if r.get("notify_all") else ""
+                    lines.append(f"[{r['id']}] {r['task']}{shared_icon}\n    📅 {time_str}")
                 await update.message.reply_text("\n".join(lines))
             return
 
@@ -1387,11 +1518,20 @@ class ReminderBot:
                 )
                 return
 
+            # Check ownership before cancelling
+            reminder = self.db.get_reminder(target_id)
+            if not reminder:
+                await update.message.reply_text(f"Reminder [{target_id}] not found.")
+                return
+            if not self._can_access(user_id, reminder):
+                await update.message.reply_text(f"Reminder [{target_id}] not accessible.")
+                return
+
             if self.db.cancel_reminder(target_id):
                 await update.message.reply_text(f"Cancelled reminder [{target_id}].")
             else:
                 await update.message.reply_text(
-                    f"Reminder [{target_id}] not found or already sent."
+                    f"Reminder [{target_id}] already sent or cancelled."
                 )
             return
 
@@ -1402,6 +1542,15 @@ class ReminderBot:
                     "I couldn't figure out which reminder to modify.\n"
                     "Try: 'change reminder 5 to tomorrow' or use /delay <id> <hours>"
                 )
+                return
+
+            # Check ownership before modifying
+            reminder = self.db.get_reminder(target_id)
+            if not reminder:
+                await update.message.reply_text(f"Reminder [{target_id}] not found.")
+                return
+            if not self._can_access(user_id, reminder):
+                await update.message.reply_text(f"Reminder [{target_id}] not accessible.")
                 return
 
             # Parse new time if provided
@@ -1428,7 +1577,7 @@ class ReminderBot:
                 )
             else:
                 await update.message.reply_text(
-                    f"Reminder [{target_id}] not found or already sent."
+                    f"Reminder [{target_id}] already sent or cancelled."
                 )
             return
 
@@ -1529,7 +1678,8 @@ class ReminderBot:
             # Get reminder to preserve the task text
             reminder = self.db.get_reminder(reminder_id)
             task_text = reminder["task"] if reminder else "reminder"
-            # Mark as acknowledged by removing the buttons but keeping the text
+            # Mark as acknowledged in DB and update message
+            self.db.acknowledge_reminder(reminder_id)
             await query.edit_message_text(
                 f"[✓ Done] {task_text}\n\n"
                 f"<i>(ID: {reminder_id})</i>",
@@ -1593,6 +1743,66 @@ class ReminderBot:
             except Exception as e:
                 self.logger.error(f"Failed to process reminder {reminder['id']}: {e}")
 
+    async def summary_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /summary command - show daily summary on demand."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        summary = self._build_summary_for_user(user_id)
+        await update.message.reply_text(summary, parse_mode="HTML")
+
+    def _build_summary_for_user(self, user_id: int) -> str:
+        """Build daily summary text for a specific user."""
+        now = self._now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
+        # Get today's reminders
+        todays_reminders = self.db.get_todays_reminders_for_user(user_id, today_start, today_end)
+
+        # Get unacknowledged sent reminders
+        unacknowledged = self.db.get_unacknowledged_reminders(user_id)
+
+        # Build summary
+        lines = [f"☀️ <b>Daily Summary</b> - {now.strftime('%a %d %b')}\n"]
+
+        if todays_reminders:
+            lines.append("📅 <b>Today's reminders:</b>")
+            for r in todays_reminders:
+                scheduled = datetime.fromisoformat(r["scheduled_time"])
+                time_str = scheduled.strftime("%H:%M")
+                shared_marker = " 👥" if r.get("notify_all", 0) else ""
+                lines.append(f"• {time_str} - {r['task']}{shared_marker} [ID: {r['id']}]")
+            lines.append("")
+        else:
+            lines.append("📅 No reminders scheduled for today.\n")
+
+        if unacknowledged:
+            lines.append("⚠️ <b>Still pending (sent but not marked done):</b>")
+            for r in unacknowledged:
+                sent_at = datetime.fromisoformat(r["sent_at"]) if r.get("sent_at") else None
+                sent_str = sent_at.strftime("%a %H:%M") if sent_at else "unknown"
+                shared_marker = " 👥" if r.get("notify_all", 0) else ""
+                lines.append(f"• {r['task']}{shared_marker} [ID: {r['id']}] - sent {sent_str}")
+
+        return "\n".join(lines)
+
+    async def send_daily_summary(self, app: Application):
+        """Send daily summary to all authorized users. Called by scheduler."""
+        self.logger.info("Sending daily summary...")
+        for user_id in self.authorized_users:
+            try:
+                summary = self._build_summary_for_user(user_id)
+                await app.bot.send_message(
+                    chat_id=user_id,
+                    text=summary,
+                    parse_mode="HTML",
+                )
+                self.logger.info(f"Sent daily summary to user {user_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to send daily summary to {user_id}: {e}")
+
     def run(self):
         """Start the bot."""
         app = Application.builder().token(self.config["telegram"]["bot_token"]).build()
@@ -1606,6 +1816,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("snooze", self.snooze_reminder))
         app.add_handler(CommandHandler("edit", self.edit_reminder))
         app.add_handler(CommandHandler("copy", self.copy_reminder))
+        app.add_handler(CommandHandler("summary", self.summary_command))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
         app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(
@@ -1619,6 +1830,21 @@ class ReminderBot:
             interval=60,
             first=10,
         )
+
+        # Set up daily summary job at configured time (default 8:00 AM)
+        daily_summary_config = self.config.get("daily_summary", {})
+        if daily_summary_config.get("enabled", True):
+            summary_time_str = daily_summary_config.get("time", "08:00")
+            try:
+                hour, minute = map(int, summary_time_str.split(":"))
+                summary_time = time(hour=hour, minute=minute, tzinfo=self.tz)
+                job_queue.run_daily(
+                    lambda ctx: asyncio.create_task(self.send_daily_summary(app)),
+                    time=summary_time,
+                )
+                self.logger.info(f"Daily summary scheduled at {summary_time_str}")
+            except ValueError:
+                self.logger.error(f"Invalid daily_summary time format: {summary_time_str}")
 
         self.logger.info("Bot started. Press Ctrl+C to stop.")
         app.run_polling(allowed_updates=Update.ALL_TYPES)

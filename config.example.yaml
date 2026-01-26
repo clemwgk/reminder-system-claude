@@ -69,3 +69,8 @@ schedule_defaults:
 # Database path (SQLite)
 database:
   path: "reminders.db"
+
+# Daily summary settings
+daily_summary:
+  enabled: true        # Set to false to disable automatic daily summary
+  time: "08:00"        # Time to send daily summary (24h format)

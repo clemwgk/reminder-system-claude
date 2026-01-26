@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-01-26
+
+### Added
+- **Daily summary**: Automatic morning digest at 8 AM (configurable)
+  - Shows today's scheduled reminders
+  - Shows sent reminders not yet marked as Done
+- `/summary` command for on-demand daily summary
+- **Done button now functional**: Pressing Done marks reminder as acknowledged in database
+- **Privacy/ownership**: Each user only sees their own reminders + shared ones
+
+### Changed
+- `/list` now shows only your reminders + shared reminders (not partner's private reminders)
+- All commands (`/cancel`, `/snooze`, `/delay`, `/edit`, `/copy`) now respect ownership
+- Snoozing a reminder resets its acknowledged status
+
 ## [1.3.0] - 2025-01-16
 
 ### Added
