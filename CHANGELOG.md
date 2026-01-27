@@ -23,7 +23,7 @@ All notable changes to this project will be documented in this file.
 - All commands (`/cancel`, `/snooze`, `/delay`, `/edit`, `/copy`) now respect ownership
 - Snoozing a reminder resets its acknowledged status
 
-## [1.3.0] - 2025-01-16
+## [1.3.0] - 2026-01-16
 
 ### Added
 - **Pop formatting**: Reminder notifications now use bold formatting for better visibility
@@ -36,7 +36,7 @@ All notable changes to this project will be documented in this file.
 - Reminder notifications now use HTML formatting for cleaner display
 - Buttons replace the snooze hint text for a cleaner, more interactive experience
 
-## [1.2.0] - 2025-01-15
+## [1.2.0] - 2026-01-15
 
 ### Added
 - `/edit <id> <text>` command to edit reminder text
@@ -51,7 +51,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Updated `/help` to include new features
 
-## [1.1.0] - 2025-01-10
+## [1.1.0] - 2026-01-10
 
 ### Added
 - Shared reminders: Say "remind us" to notify all authorized users
@@ -64,7 +64,7 @@ All notable changes to this project will be documented in this file.
 - Snooze now works on already-sent reminders
 - "remind me to delete my emails" no longer triggers cancel
 
-## [1.0.0] - 2025-01-06
+## [1.0.0] - 2026-01-06
 
 ### Added
 - Initial release
