@@ -1275,6 +1275,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.1 (Jan 2026)\n"
+            "• Still pending section now capped at last 7 days\n\n"
             "v1.5.0 (Jan 2026)\n"
             "• Daily summary - auto sent at 8 AM + /summary command\n"
             "• Done button now marks reminders as acknowledged\n"
