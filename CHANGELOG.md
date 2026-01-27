@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.2] - 2026-01-27
+
+### Added
+- "Snooze 1d" button on reminder notifications (snooze for 24 hours)
+
+### Changed
+- Shortened snooze button labels (15m, 1h, 1d) to fit on mobile
+
 ## [1.5.1] - 2026-01-27
 
 ### Changed

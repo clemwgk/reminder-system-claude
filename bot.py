@@ -1275,6 +1275,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.2 (Jan 2026)\n"
+            "• Added Snooze 1d button (24 hours)\n\n"
             "v1.5.1 (Jan 2026)\n"
             "• Still pending section now capped at last 7 days\n\n"
             "v1.5.0 (Jan 2026)\n"
@@ -1724,8 +1726,9 @@ class ReminderBot:
                 # Inline keyboard buttons for quick actions
                 keyboard = [
                     [
-                        InlineKeyboardButton("⏰ Snooze 15m", callback_data=f"snooze_15_{reminder_id}"),
-                        InlineKeyboardButton("⏰ Snooze 1h", callback_data=f"snooze_60_{reminder_id}"),
+                        InlineKeyboardButton("⏰ 15m", callback_data=f"snooze_15_{reminder_id}"),
+                        InlineKeyboardButton("⏰ 1h", callback_data=f"snooze_60_{reminder_id}"),
+                        InlineKeyboardButton("⏰ 1d", callback_data=f"snooze_1440_{reminder_id}"),
                     ],
                     [
                         InlineKeyboardButton("✓ Done", callback_data=f"done_{reminder_id}"),
