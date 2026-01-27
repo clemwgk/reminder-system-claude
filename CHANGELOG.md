@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-01-27
+
+### Changed
+- "Still pending" section now only shows reminders sent within the last 7 days
+- Prevents old pre-feature reminders from cluttering the daily summary
+
 ## [1.5.0] - 2026-01-26
 
 ### Added

@@ -626,8 +626,12 @@ class ReminderDB:
             conn.commit()
             return cursor.rowcount > 0
 
-    def get_unacknowledged_reminders(self, user_id: int) -> list[dict]:
-        """Get sent reminders that haven't been acknowledged (for recap)."""
+    def get_unacknowledged_reminders(self, user_id: int, days_cap: int = 7) -> list[dict]:
+        """Get sent reminders that haven't been acknowledged (for recap).
+
+        Only includes reminders sent within the last `days_cap` days.
+        """
+        cutoff = (datetime.now() - timedelta(days=days_cap)).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
@@ -636,9 +640,10 @@ class ReminderDB:
                 WHERE status = 'sent'
                 AND acknowledged_at IS NULL
                 AND (created_by = ? OR notify_all = 1)
+                AND sent_at >= ?
                 ORDER BY sent_at ASC
                 """,
-                (user_id,),
+                (user_id, cutoff),
             ).fetchall()
             return [dict(row) for row in rows]
 
