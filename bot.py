@@ -437,6 +437,13 @@ class ReminderDB:
                 conn.execute("ALTER TABLE reminders ADD COLUMN acknowledged_at TEXT")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # Create user_preferences table for per-user settings
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id INTEGER PRIMARY KEY,
+                    daily_summary_enabled INTEGER NOT NULL DEFAULT 1
+                )
+            """)
             conn.commit()
 
     def add_reminder(
@@ -679,6 +686,43 @@ class ReminderDB:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def get_user_preference(self, user_id: int, key: str, default=None):
+        """Get a user preference value."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if row:
+                return dict(row).get(key, default)
+            return default
+
+    def set_user_preference(self, user_id: int, key: str, value):
+        """Set a user preference value. Creates row if doesn't exist."""
+        with sqlite3.connect(self.db_path) as conn:
+            # Check if user exists
+            existing = conn.execute(
+                "SELECT 1 FROM user_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    f"UPDATE user_preferences SET {key} = ? WHERE user_id = ?",
+                    (value, user_id),
+                )
+            else:
+                conn.execute(
+                    f"INSERT INTO user_preferences (user_id, {key}) VALUES (?, ?)",
+                    (user_id, value),
+                )
+            conn.commit()
+
+    def is_daily_summary_enabled(self, user_id: int) -> bool:
+        """Check if daily summary is enabled for a user. Default is True."""
+        result = self.get_user_preference(user_id, "daily_summary_enabled", 1)
+        return result == 1
+
 
 # =============================================================================
 # SCHEDULE RULES
@@ -867,6 +911,7 @@ class ReminderBot:
             "Commands:\n"
             "/list - Show your pending reminders\n"
             "/summary - Show daily summary (today + unacknowledged)\n"
+            "/dailysummary on|off - Toggle 8 AM summary\n"
             "/cancel <id> [id2...] - Cancel reminder(s)\n"
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
@@ -1275,6 +1320,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.3 (Feb 2026)\n"
+            "• /dailysummary on|off - toggle 8 AM summary per user\n\n"
             "v1.5.2 (Jan 2026)\n"
             "• Added Snooze 1d button (24 hours)\n\n"
             "v1.5.1 (Jan 2026)\n"
@@ -1762,6 +1809,31 @@ class ReminderBot:
         summary = self._build_summary_for_user(user_id)
         await update.message.reply_text(summary, parse_mode="HTML")
 
+    async def dailysummary_toggle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dailysummary command - toggle daily summary on/off for the user."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        if context.args:
+            arg = context.args[0].lower()
+            if arg in ("on", "yes", "true", "1"):
+                self.db.set_user_preference(user_id, "daily_summary_enabled", 1)
+                await update.message.reply_text("✓ Daily summary enabled. You'll receive it at 8 AM.")
+            elif arg in ("off", "no", "false", "0"):
+                self.db.set_user_preference(user_id, "daily_summary_enabled", 0)
+                await update.message.reply_text("✓ Daily summary disabled. You can still use /summary anytime.")
+            else:
+                await update.message.reply_text("Usage: /dailysummary on|off")
+        else:
+            # Show current status
+            enabled = self.db.is_daily_summary_enabled(user_id)
+            status = "enabled" if enabled else "disabled"
+            await update.message.reply_text(
+                f"Daily summary is currently {status} for you.\n\n"
+                f"Use /dailysummary on or /dailysummary off to change."
+            )
+
     def _build_summary_for_user(self, user_id: int) -> str:
         """Build daily summary text for a specific user."""
         now = self._now()
@@ -1799,9 +1871,13 @@ class ReminderBot:
         return "\n".join(lines)
 
     async def send_daily_summary(self, app: Application):
-        """Send daily summary to all authorized users. Called by scheduler."""
+        """Send daily summary to users who have it enabled. Called by scheduler."""
         self.logger.info("Sending daily summary...")
         for user_id in self.authorized_users:
+            # Check if user has daily summary enabled
+            if not self.db.is_daily_summary_enabled(user_id):
+                self.logger.info(f"Skipping daily summary for user {user_id} (disabled)")
+                continue
             try:
                 summary = self._build_summary_for_user(user_id)
                 await app.bot.send_message(
@@ -1827,6 +1903,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("edit", self.edit_reminder))
         app.add_handler(CommandHandler("copy", self.copy_reminder))
         app.add_handler(CommandHandler("summary", self.summary_command))
+        app.add_handler(CommandHandler("dailysummary", self.dailysummary_toggle))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
         app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(

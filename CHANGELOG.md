@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.3] - 2026-02-02
+
+### Added
+- `/dailysummary on|off` command - each user can toggle their own 8 AM summary
+- User preferences stored in database (no restart needed)
+
 ## [1.5.2] - 2026-01-27
 
 ### Added
