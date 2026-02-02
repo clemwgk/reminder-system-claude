@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.4] - 2026-02-02
+
+### Added
+- Day-of-week post-processing validation: auto-corrects LLM parsing errors when user specifies a day name (e.g., "fri 3pm" scheduled on wrong day)
+- Limited scope validation: only triggers when day name is in first 2 words (or words 2-4 after "remind me/us")
+- User notification: shows "⚡ (day-of-week auto-corrected)" in confirmation when correction was applied
+
 ## [1.5.3] - 2026-02-02
 
 ### Added

@@ -855,6 +855,88 @@ class ReminderBot:
         """Get current time in configured timezone."""
         return datetime.now(self.tz)
 
+    # Day name mappings for post-processing validation
+    DAY_NAMES = {
+        "monday": 0, "mon": 0,
+        "tuesday": 1, "tue": 1, "tues": 1,
+        "wednesday": 2, "wed": 2,
+        "thursday": 3, "thu": 3, "thur": 3, "thurs": 3,
+        "friday": 4, "fri": 4,
+        "saturday": 5, "sat": 5,
+        "sunday": 6, "sun": 6,
+    }
+
+    def _get_words_to_check(self, user_input: str) -> list[str]:
+        """Get the words to check for day names (limited scope to avoid false positives).
+
+        - Standard: check words[0:2]
+        - "remind me/us": check words[2:4]
+        """
+        words = user_input.lower().split()
+        if len(words) >= 3 and words[0] == "remind" and words[1] in ("me", "us"):
+            return words[2:4]
+        return words[:2]
+
+    def _validate_day_of_week(
+        self, user_input: str, scheduled_time: datetime, current_time: datetime
+    ) -> tuple[datetime, bool]:
+        """Validate and correct day-of-week if LLM got it wrong.
+
+        Returns (corrected_time, was_corrected).
+        Only triggers when a day name is found in the first 2 words
+        (or words 2-4 after "remind me/us").
+        """
+        words_to_check = self._get_words_to_check(user_input)
+
+        # Find any day name in the words to check
+        target_weekday = None
+        matched_day_name = None
+        for word in words_to_check:
+            # Remove punctuation from word
+            clean_word = re.sub(r'[^\w]', '', word)
+            if clean_word in self.DAY_NAMES:
+                target_weekday = self.DAY_NAMES[clean_word]
+                matched_day_name = clean_word
+                break
+
+        if target_weekday is None:
+            # No day name found in scope - no validation needed
+            return scheduled_time, False
+
+        # Check if scheduled_time falls on the correct day
+        if scheduled_time.weekday() == target_weekday:
+            # LLM got it right
+            return scheduled_time, False
+
+        # LLM got it wrong - calculate the correct date
+        self.logger.warning(
+            f"Day-of-week mismatch: user said '{matched_day_name}' (weekday {target_weekday}) "
+            f"but LLM scheduled for {scheduled_time.strftime('%A')} (weekday {scheduled_time.weekday()}). "
+            f"Correcting..."
+        )
+
+        # Calculate days until target weekday from today
+        current_weekday = current_time.weekday()
+        days_ahead = target_weekday - current_weekday
+        if days_ahead <= 0:
+            # Target day already passed this week, schedule for next week
+            days_ahead += 7
+
+        # Build corrected datetime: same time, correct date
+        correct_date = current_time.date() + timedelta(days=days_ahead)
+        corrected_time = scheduled_time.replace(
+            year=correct_date.year,
+            month=correct_date.month,
+            day=correct_date.day,
+        )
+
+        self.logger.info(
+            f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
+            f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
+        )
+
+        return corrected_time, True
+
     async def _get_reminder_id_from_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
         """Extract reminder ID from a replied-to bot message."""
         if not update.message.reply_to_message:
@@ -1326,6 +1408,9 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.4 (Feb 2026)\n"
+            "• Day-of-week auto-correction for LLM parsing errors\n"
+            "• Shows ⚡ indicator when correction is applied\n\n"
             "v1.5.3 (Feb 2026)\n"
             "• /dailysummary on|off - toggle 8 AM summary per user\n\n"
             "v1.5.2 (Jan 2026)\n"
@@ -1650,11 +1735,16 @@ class ReminderBot:
 
         # Parse scheduled time if provided
         scheduled_time = None
+        day_corrected = False
         if scheduled_time_str:
             try:
                 scheduled_time = datetime.fromisoformat(scheduled_time_str)
                 if scheduled_time.tzinfo is None:
                     scheduled_time = scheduled_time.replace(tzinfo=self.tz)
+                # Apply day-of-week validation (limited scope to avoid false positives)
+                scheduled_time, day_corrected = self._validate_day_of_week(
+                    user_input, scheduled_time, current_time
+                )
             except (ValueError, TypeError):
                 scheduled_time = None
 
@@ -1665,6 +1755,8 @@ class ReminderBot:
         notify_text = "you" if not shared else "everyone"
 
         # Handle single or multiple reminder times
+        correction_note = "\n⚡ (day-of-week auto-corrected)" if day_corrected else ""
+
         if isinstance(final_times, list):
             # Multiple reminders (e.g., food expiry)
             ids = []
@@ -1681,7 +1773,7 @@ class ReminderBot:
                 f"'{task}'{shared_note}\n\n"
                 f"Scheduled times:\n{times_str}\n\n"
                 f"Category: {category}\n"
-                f"IDs: {ids}"
+                f"IDs: {ids}{correction_note}"
             )
         else:
             # Single reminder
@@ -1694,7 +1786,7 @@ class ReminderBot:
                 f"'{task}'{shared_note}\n\n"
                 f"Scheduled: {time_str}\n"
                 f"Category: {category}\n"
-                f"ID: [{reminder_id}]"
+                f"ID: [{reminder_id}]{correction_note}"
             )
 
     async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
