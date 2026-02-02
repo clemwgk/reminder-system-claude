@@ -135,6 +135,12 @@ Common shorthands to recognize:
 - "nxt wk" = next week
 - "2nite" or "tonite" = tonight (same day at 20:00)
 - "aft" = afternoon (same day at 14:00)
+- Day abbreviations: "mon", "tue", "wed", "thu", "fri", "sat", "sun" = that day of the week
+  - If the day has already passed this week, schedule for NEXT week's occurrence
+  - Example: If today is Monday and user says "fri 3pm", schedule for Friday of THIS week
+  - Example: If today is Saturday and user says "fri 3pm", schedule for Friday of NEXT week
+
+IMPORTANT: When a day of the week is mentioned, VERIFY that your scheduled_time actually falls on that day. Double-check your date calculation.
 
 LANGUAGE NOTE (Singaporean English):
 Users may use Singaporean English patterns. Key differences from US/UK English:
