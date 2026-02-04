@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.7] - 2026-02-04
+
+### Added
+- LLM now reports time parsing confidence (0-100)
+- Shows `/settime` hint when confidence <20%
+
+### Changed
+- "Processing..." message now auto-deletes after parsing completes
+
 ## [1.5.6] - 2026-02-04
 
 ### Added

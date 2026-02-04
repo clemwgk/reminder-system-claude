@@ -99,6 +99,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
 - "time_hint": the original time reference from the user, or null
 - "target_id": the ID of an existing reminder to cancel/modify, or null
 - "shared": true if the user said "remind us" or wants to notify all users, false otherwise
+- "time_confidence": 0-100 score for how confident you are about scheduled_time (null if no time)
 
 ACTION DETECTION RULES (VERY IMPORTANT):
 - "create": User wants a NEW reminder (e.g., "remind me to...", "set a reminder for..."). This is the DEFAULT action.
@@ -167,11 +168,19 @@ Users may use Singaporean English patterns. Key differences from US/UK English:
 
 Always extract the time reference even when prepositions are missing.
 
+TIME CONFIDENCE SCORING:
+- 100: Explicit datetime like "15 Feb 6pm", "tomorrow 3pm"
+- 80-99: Clear relative time like "friday 3pm", "next week"
+- 50-79: Ambiguous but reasonable guess like "2 weeks before March"
+- 20-49: Very ambiguous, multiple interpretations possible
+- 0-19: Guessing with low certainty
+- null: No time was mentioned
+
 Example responses:
-{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false}}
-{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false}}
-{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false}}
-{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false}}
+{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null}}
+{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false, "time_confidence": null}}
+{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false, "time_confidence": 95}}
+{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false, "time_confidence": 85}}
 """
 
 
@@ -1575,6 +1584,9 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.7 (Feb 2026)\n"
+            "• Shows /settime hint when LLM confidence <20%\n"
+            "• Processing message auto-deletes after parsing\n\n"
             "v1.5.6 (Feb 2026)\n"
             "• /settime - set exact time (15/02 6pm, 18:00, etc.)\n\n"
             "v1.5.5 (Feb 2026)\n"
@@ -1788,9 +1800,15 @@ class ReminderBot:
             return
 
         # Parse with LLM (for more complex inputs)
-        await update.message.reply_text("Processing...")
+        processing_msg = await update.message.reply_text("Processing...")
 
         result = await self.llm.parse_reminder(user_input, current_time, recent_reminders)
+
+        # Delete the "Processing..." message
+        try:
+            await processing_msg.delete()
+        except Exception:
+            pass  # Ignore if delete fails
 
         if "error" in result:
             await update.message.reply_text(
@@ -1903,6 +1921,7 @@ class ReminderBot:
         task = result.get("task", user_input)
         category = result.get("category", "general")
         scheduled_time_str = result.get("scheduled_time")
+        time_confidence = result.get("time_confidence")
 
         # Parse scheduled time if provided
         scheduled_time = None
@@ -1926,7 +1945,15 @@ class ReminderBot:
         notify_text = "you" if not shared else "everyone"
 
         # Handle single or multiple reminder times
-        correction_note = "\n⚡ (day-of-week auto-corrected)" if day_corrected else ""
+        # Build notes for corrections and low confidence
+        notes = []
+        if day_corrected:
+            notes.append("⚡ (day-of-week auto-corrected)")
+        # Show hint if confidence is low (<20%) and time was provided
+        low_confidence = time_confidence is not None and time_confidence < 20
+        if low_confidence:
+            notes.append("💡 Wrong time? Reply with /settime <correct time>")
+        correction_note = "\n" + "\n".join(notes) if notes else ""
 
         if isinstance(final_times, list):
             # Multiple reminders (e.g., food expiry)
