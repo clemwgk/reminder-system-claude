@@ -944,6 +944,90 @@ class ReminderBot:
 
         return corrected_time, True
 
+    def _parse_explicit_time(self, time_str: str) -> Optional[datetime]:
+        """Parse explicit time format for /settime command.
+
+        Supports:
+        - DD/MM HH:MM (24hr): 15/02 18:00
+        - DD/MM/YY HH:MM (24hr): 15/02/26 18:00
+        - DD/MM HHam/pm: 15/02 6pm, 15/02 6:30pm
+        - HH:MM (24hr, today): 18:00
+        - HHam/pm (today): 6pm, 6:30pm
+        """
+        time_str = time_str.strip().lower()
+        now = self._now()
+
+        # Normalize: remove extra spaces, handle "6 pm" -> "6pm"
+        time_str = re.sub(r'\s+(am|pm)', r'\1', time_str)
+
+        # Try to split into date and time parts
+        parts = time_str.split()
+
+        if len(parts) == 2:
+            # Date + time: "15/02 18:00" or "15/02 6pm"
+            date_part, time_part = parts
+        elif len(parts) == 1:
+            # Time only: "18:00" or "6pm"
+            date_part = None
+            time_part = parts[0]
+        else:
+            return None
+
+        # Parse time part (handles both 24hr and am/pm)
+        hour, minute = None, 0
+        # Try am/pm formats: 6pm, 6:30pm, 11am, 11:30am
+        ampm_match = re.match(r'^(\d{1,2})(?::(\d{2}))?(am|pm)$', time_part)
+        if ampm_match:
+            hour = int(ampm_match.group(1))
+            minute = int(ampm_match.group(2)) if ampm_match.group(2) else 0
+            if ampm_match.group(3) == 'pm' and hour != 12:
+                hour += 12
+            elif ampm_match.group(3) == 'am' and hour == 12:
+                hour = 0
+        else:
+            # Try 24hr format: 18:00, 9:00
+            time_match = re.match(r'^(\d{1,2}):(\d{2})$', time_part)
+            if time_match:
+                hour = int(time_match.group(1))
+                minute = int(time_match.group(2))
+
+        if hour is None or hour > 23 or minute > 59:
+            return None
+
+        # Parse date part
+        if date_part:
+            # Try DD/MM/YY
+            date_match = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', date_part)
+            if date_match:
+                day = int(date_match.group(1))
+                month = int(date_match.group(2))
+                year = 2000 + int(date_match.group(3))
+            else:
+                # Try DD/MM (assume current year, or next year if date passed)
+                date_match = re.match(r'^(\d{1,2})/(\d{1,2})$', date_part)
+                if date_match:
+                    day = int(date_match.group(1))
+                    month = int(date_match.group(2))
+                    year = now.year
+                    # If date already passed this year, use next year
+                    try:
+                        candidate = datetime(year, month, day, hour, minute, tzinfo=self.tz)
+                        if candidate < now:
+                            year += 1
+                    except ValueError:
+                        return None
+                else:
+                    return None
+        else:
+            # Time only - use today
+            day, month, year = now.day, now.month, now.year
+
+        try:
+            result = datetime(year, month, day, hour, minute, tzinfo=self.tz)
+            return result
+        except ValueError:
+            return None
+
     async def _get_reminder_id_from_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
         """Extract reminder ID from a replied-to bot message."""
         if not update.message.reply_to_message:
@@ -1011,12 +1095,13 @@ class ReminderBot:
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
             "/edit <id> <text> - Edit reminder text\n"
+            "/settime <id> <time> - Set exact time (e.g., 15/02 6pm)\n"
             "/copy <id> <time> - Copy reminder to new time\n"
             "/changelog - Show recent updates\n"
             "/help - Show this message\n\n"
             "Quick reply:\n"
             "Reply to any bot message to act on that reminder:\n"
-            "• Reply with /cancel, /snooze, /delay, /edit, /copy\n"
+            "• Reply with /cancel, /snooze, /delay, /edit, /settime, /copy\n"
             "• Or just type new text to edit the reminder\n\n"
             "Time shorthands:\n"
             "• tmr = tomorrow\n"
@@ -1304,6 +1389,81 @@ class ReminderBot:
         else:
             await update.message.reply_text("Failed to edit reminder.")
 
+    async def settime_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /settime command - set exact time for a reminder using explicit format."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        reminder_id = None
+        time_str = None
+
+        reply_id = await self._get_reminder_id_from_reply(update, context)
+
+        if len(context.args) >= 2:
+            # /settime <id> <time>
+            try:
+                reminder_id = int(context.args[0])
+                time_str = " ".join(context.args[1:])
+            except ValueError:
+                await update.message.reply_text("Invalid reminder ID.")
+                return
+        elif len(context.args) == 1 and reply_id:
+            # Reply + /settime <time>
+            reminder_id = reply_id
+            time_str = context.args[0]
+        else:
+            await update.message.reply_text(
+                "Usage: /settime <id> <time>\n\n"
+                "Time formats:\n"
+                "• DD/MM HH:MM → 15/02 18:00\n"
+                "• DD/MM HHam/pm → 15/02 6pm\n"
+                "• HH:MM → 18:00 (today)\n"
+                "• HHam/pm → 6pm (today)\n\n"
+                "Examples:\n"
+                "• /settime 135 15/02 6pm\n"
+                "• /settime 135 18:00\n"
+                "• Reply + /settime 6pm"
+            )
+            return
+
+        # Check reminder exists and user can access
+        reminder = self.db.get_reminder(reminder_id)
+        if not reminder:
+            await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+            return
+        if not self._can_access(user_id, reminder):
+            await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
+            return
+        if reminder["status"] != "pending":
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] already sent.\n"
+                "Use /snooze to reschedule sent reminders."
+            )
+            return
+
+        # Parse the explicit time
+        new_time = self._parse_explicit_time(time_str)
+        if not new_time:
+            await update.message.reply_text(
+                f"Couldn't parse time: '{time_str}'\n\n"
+                "Expected formats:\n"
+                "• DD/MM HH:MM → 15/02 18:00\n"
+                "• DD/MM HHam/pm → 15/02 6pm\n"
+                "• HH:MM → 18:00 (today)\n"
+                "• HHam/pm → 6pm (today)"
+            )
+            return
+
+        if self.db.modify_reminder(reminder_id, new_time=new_time):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] rescheduled:\n"
+                f"'{reminder['task']}'\n\n"
+                f"New time: {new_time.strftime('%A %d %B, %H:%M')}"
+            )
+        else:
+            await update.message.reply_text("Failed to update reminder.")
+
     async def copy_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /copy command - duplicate a pending reminder with new time."""
         if not self._is_authorized(update.effective_user.id):
@@ -1415,6 +1575,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.6 (Feb 2026)\n"
+            "• /settime - set exact time (15/02 6pm, 18:00, etc.)\n\n"
             "v1.5.5 (Feb 2026)\n"
             "• Better parsing for 'X weeks before [month]' patterns\n\n"
             "v1.5.4 (Feb 2026)\n"
@@ -2008,6 +2170,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("delay", self.delay_reminder))
         app.add_handler(CommandHandler("snooze", self.snooze_reminder))
         app.add_handler(CommandHandler("edit", self.edit_reminder))
+        app.add_handler(CommandHandler("settime", self.settime_reminder))
         app.add_handler(CommandHandler("copy", self.copy_reminder))
         app.add_handler(CommandHandler("summary", self.summary_command))
         app.add_handler(CommandHandler("dailysummary", self.dailysummary_toggle))

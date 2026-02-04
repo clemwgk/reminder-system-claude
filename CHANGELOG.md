@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.6] - 2026-02-04
+
+### Added
+- `/settime <id> <time>` command - set exact time using explicit format (no LLM)
+- Supports both 24hr (18:00) and AM/PM (6pm) formats
+- Supports date formats: DD/MM, DD/MM/YY, or time-only for today
+
 ## [1.5.5] - 2026-02-04
 
 ### Improved
