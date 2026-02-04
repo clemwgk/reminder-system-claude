@@ -461,6 +461,11 @@ class ReminderDB:
                 conn.execute("ALTER TABLE reminders ADD COLUMN acknowledged_at TEXT")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # Add time_confidence column for LLM confidence scoring
+            try:
+                conn.execute("ALTER TABLE reminders ADD COLUMN time_confidence INTEGER")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             # Create user_preferences table for per-user settings
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_preferences (
@@ -477,13 +482,14 @@ class ReminderDB:
         scheduled_time: datetime,
         created_by: int,
         notify_all: bool = False,
+        time_confidence: int = None,
     ) -> int:
         """Add a new reminder. Returns the reminder ID."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status, notify_all)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?)
+                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status, notify_all, time_confidence)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     task,
@@ -492,6 +498,7 @@ class ReminderDB:
                     datetime.now().isoformat(),
                     created_by,
                     1 if notify_all else 0,
+                    time_confidence,
                 ),
             )
             conn.commit()
@@ -1968,7 +1975,7 @@ class ReminderBot:
             # Multiple reminders (e.g., food expiry)
             ids = []
             for t in final_times:
-                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared)
+                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared, time_confidence=time_confidence)
                 ids.append(rid)
 
             times_str = "\n".join(
@@ -1984,7 +1991,7 @@ class ReminderBot:
             )
         else:
             # Single reminder
-            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared)
+            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared, time_confidence=time_confidence)
             time_str = final_times.strftime("%A %d %B, %H:%M")
             shared_note = " 👥 (shared)" if shared else ""
 
