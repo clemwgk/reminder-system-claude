@@ -168,12 +168,14 @@ Users may use Singaporean English patterns. Key differences from US/UK English:
 
 Always extract the time reference even when prepositions are missing.
 
-TIME CONFIDENCE SCORING:
-- 100: Explicit datetime like "15 Feb 6pm", "tomorrow 3pm"
-- 80-99: Clear relative time like "friday 3pm", "next week"
-- 50-79: Ambiguous but reasonable guess like "2 weeks before March"
-- 20-49: Very ambiguous, multiple interpretations possible
-- 0-19: Guessing with low certainty
+TIME CONFIDENCE SCORING (0-100):
+Rate how confident YOU are that your scheduled_time matches what the USER INTENDED.
+Ask yourself: "Could the user have meant a different date/time? Did I interpret ambiguous references correctly?"
+- 90-100: Certain - explicit datetime or unambiguous reference
+- 70-89: Confident - clear reference, unlikely to be wrong
+- 40-69: Moderate - some ambiguity but reasonable interpretation
+- 20-39: Uncertain - multiple valid interpretations possible
+- 0-19: Guessing - low certainty, user should verify
 - null: No time was mentioned
 
 Example responses:
@@ -1941,6 +1943,13 @@ class ReminderBot:
         # Resolve final time(s) using schedule rules
         final_times = self.scheduler.resolve_time(category, scheduled_time, current_time)
 
+        # Log confidence score for analysis
+        if time_confidence is not None:
+            self.logger.info(
+                f"Time parsing confidence: {time_confidence}% for input '{user_input}' "
+                f"→ {scheduled_time_str}"
+            )
+
         # Determine notification text
         notify_text = "you" if not shared else "everyone"
 
@@ -1949,9 +1958,9 @@ class ReminderBot:
         notes = []
         if day_corrected:
             notes.append("⚡ (day-of-week auto-corrected)")
-        # Show hint if confidence is low (<20%) and time was provided
+        # Show hint if confidence is low (<20%) OR post-validation was triggered
         low_confidence = time_confidence is not None and time_confidence < 20
-        if low_confidence:
+        if low_confidence or day_corrected:
             notes.append("💡 Wrong time? Reply with /settime <correct time>")
         correction_note = "\n" + "\n".join(notes) if notes else ""
 
