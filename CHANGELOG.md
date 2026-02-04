@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.5] - 2026-02-04
+
+### Improved
+- LLM prompt now handles "X weeks/days before [date/month]" patterns (e.g., "2 weeks before March")
+
 ## [1.5.4] - 2026-02-02
 
 ### Added

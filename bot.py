@@ -130,6 +130,13 @@ Rules for scheduled_time:
 - If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
 - If no time mentioned at all, set to null (the system will apply category defaults)
 
+Relative time with "before":
+- "X days/weeks before [date/month]" = subtract X days/weeks from that date
+- "2 weeks before March" = Feb 15 (2 weeks before March 1)
+- "1 week before Christmas" = Dec 18 (1 week before Dec 25)
+- "3 days before Friday" = Tuesday of the same week
+- When a month is mentioned without a day, assume the 1st of that month
+
 Common shorthands to recognize:
 - "tmr" = tomorrow
 - "nxt wk" = next week
@@ -1408,6 +1415,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.5 (Feb 2026)\n"
+            "• Better parsing for 'X weeks before [month]' patterns\n\n"
             "v1.5.4 (Feb 2026)\n"
             "• Day-of-week auto-correction for LLM parsing errors\n"
             "• Shows ⚡ indicator when correction is applied\n\n"
