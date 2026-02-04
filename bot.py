@@ -1968,7 +1968,7 @@ class ReminderBot:
         # Show hint if confidence is low (<20%) OR post-validation was triggered
         low_confidence = time_confidence is not None and time_confidence < 20
         if low_confidence or day_corrected:
-            notes.append("💡 Wrong? /settime <id> DD/MM HH:MM or HHam/pm")
+            notes.append("💡 Wrong? /settime <id> DD/MM[/YY] HH:MM or HHam/pm")
         correction_note = "\n" + "\n".join(notes) if notes else ""
 
         if isinstance(final_times, list):
