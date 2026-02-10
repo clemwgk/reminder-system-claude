@@ -891,6 +891,12 @@ class ReminderBot:
         "sunday": 6, "sun": 6,
     }
 
+    # Relative day mappings (0 = today, 1 = tomorrow)
+    RELATIVE_DAYS = {
+        "today": 0, "tdy": 0,
+        "tomorrow": 1, "tmr": 1, "tml": 1, "tmrw": 1,
+    }
+
     def _get_words_to_check(self, user_input: str) -> list[str]:
         """Get the words to check for day names (limited scope to avoid false positives).
 
@@ -905,62 +911,84 @@ class ReminderBot:
     def _validate_day_of_week(
         self, user_input: str, scheduled_time: datetime, current_time: datetime
     ) -> tuple[datetime, bool]:
-        """Validate and correct day-of-week if LLM got it wrong.
+        """Validate and correct day reference if LLM got it wrong.
+
+        Handles:
+        - Day names: mon, tue, wed, thu, fri, sat, sun (and variants)
+        - Relative days: today, tdy, tomorrow, tmr, etc.
 
         Returns (corrected_time, was_corrected).
-        Only triggers when a day name is found in the first 2 words
+        Only triggers when a day reference is found in the first 2 words
         (or words 2-4 after "remind me/us").
         """
         words_to_check = self._get_words_to_check(user_input)
 
-        # Find any day name in the words to check
-        target_weekday = None
-        matched_day_name = None
+        # Check each word for day names or relative days
         for word in words_to_check:
-            # Remove punctuation from word
             clean_word = re.sub(r'[^\w]', '', word)
+
+            # Check for day-of-week names (mon, tue, wed, etc.)
             if clean_word in self.DAY_NAMES:
                 target_weekday = self.DAY_NAMES[clean_word]
-                matched_day_name = clean_word
-                break
 
-        if target_weekday is None:
-            # No day name found in scope - no validation needed
-            return scheduled_time, False
+                # Check if scheduled_time falls on the correct day
+                if scheduled_time.weekday() == target_weekday:
+                    return scheduled_time, False
 
-        # Check if scheduled_time falls on the correct day
-        if scheduled_time.weekday() == target_weekday:
-            # LLM got it right
-            return scheduled_time, False
+                # LLM got it wrong - calculate the correct date
+                self.logger.warning(
+                    f"Day-of-week mismatch: user said '{clean_word}' (weekday {target_weekday}) "
+                    f"but LLM scheduled for {scheduled_time.strftime('%A')} (weekday {scheduled_time.weekday()}). "
+                    f"Correcting..."
+                )
 
-        # LLM got it wrong - calculate the correct date
-        self.logger.warning(
-            f"Day-of-week mismatch: user said '{matched_day_name}' (weekday {target_weekday}) "
-            f"but LLM scheduled for {scheduled_time.strftime('%A')} (weekday {scheduled_time.weekday()}). "
-            f"Correcting..."
-        )
+                current_weekday = current_time.weekday()
+                days_ahead = target_weekday - current_weekday
+                if days_ahead <= 0:
+                    days_ahead += 7
 
-        # Calculate days until target weekday from today
-        current_weekday = current_time.weekday()
-        days_ahead = target_weekday - current_weekday
-        if days_ahead <= 0:
-            # Target day already passed this week, schedule for next week
-            days_ahead += 7
+                correct_date = current_time.date() + timedelta(days=days_ahead)
+                corrected_time = scheduled_time.replace(
+                    year=correct_date.year,
+                    month=correct_date.month,
+                    day=correct_date.day,
+                )
 
-        # Build corrected datetime: same time, correct date
-        correct_date = current_time.date() + timedelta(days=days_ahead)
-        corrected_time = scheduled_time.replace(
-            year=correct_date.year,
-            month=correct_date.month,
-            day=correct_date.day,
-        )
+                self.logger.info(
+                    f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
+                    f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
+                )
+                return corrected_time, True
 
-        self.logger.info(
-            f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
-            f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
-        )
+            # Check for relative days (today, tomorrow, etc.)
+            if clean_word in self.RELATIVE_DAYS:
+                days_offset = self.RELATIVE_DAYS[clean_word]
+                expected_date = (current_time + timedelta(days=days_offset)).date()
 
-        return corrected_time, True
+                # Check if scheduled_time falls on the correct date
+                if scheduled_time.date() == expected_date:
+                    return scheduled_time, False
+
+                # LLM got it wrong - correct to the expected date
+                self.logger.warning(
+                    f"Relative day mismatch: user said '{clean_word}' (expected {expected_date}) "
+                    f"but LLM scheduled for {scheduled_time.date()}. Correcting..."
+                )
+
+                corrected_time = scheduled_time.replace(
+                    year=expected_date.year,
+                    month=expected_date.month,
+                    day=expected_date.day,
+                )
+
+                self.logger.info(
+                    f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
+                    f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
+                )
+                return corrected_time, True
+
+        # No day reference found in scope - no validation needed
+        return scheduled_time, False
 
     def _parse_explicit_time(self, time_str: str) -> Optional[datetime]:
         """Parse explicit time format for /settime command.
@@ -1593,6 +1621,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.8 (Feb 2026)\n"
+            "• Validation now handles today/tomorrow (tdy, tmr, etc.)\n\n"
             "v1.5.7 (Feb 2026)\n"
             "• Shows /settime hint when LLM confidence <20%\n"
             "• Processing message auto-deletes after parsing\n\n"

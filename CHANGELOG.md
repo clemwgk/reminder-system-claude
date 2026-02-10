@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.8] - 2026-02-10
+
+### Added
+- Post-validation now handles "today" and "tomorrow" (and variants: tdy, tmr, tml, tmrw)
+- Auto-corrects when LLM schedules wrong date despite explicit today/tomorrow reference
+
 ## [1.5.7] - 2026-02-04
 
 ### Added
