@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.9] - 2026-02-14
+
+### Added
+- `/settime` now accepts day names (e.g., `/settime 171 thu 9pm`)
+- `/settime` now accepts today/tomorrow variants (e.g., `/settime 171 tmr 9am`)
+- Post-validation handles "tonight", "tonite", "2nite"
+- Post-validation handles two-word phrases: "this morning", "this afternoon", "this evening"
+- Smart scope extension: if "this" detected in first words, extends check by one word
+
 ## [1.5.8] - 2026-02-10
 
 ### Added

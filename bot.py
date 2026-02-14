@@ -894,7 +894,15 @@ class ReminderBot:
     # Relative day mappings (0 = today, 1 = tomorrow)
     RELATIVE_DAYS = {
         "today": 0, "tdy": 0,
+        "tonight": 0, "tonite": 0, "2nite": 0,
         "tomorrow": 1, "tmr": 1, "tml": 1, "tmrw": 1,
+    }
+
+    # Two-word relative phrases (all map to today)
+    RELATIVE_PHRASES = {
+        "this morning": 0,
+        "this afternoon": 0,
+        "this evening": 0,
     }
 
     def _get_words_to_check(self, user_input: str) -> list[str]:
@@ -902,11 +910,19 @@ class ReminderBot:
 
         - Standard: check words[0:2]
         - "remind me/us": check words[2:4]
+        - If "this" is found in the slice, extend by one word to capture
+          two-word phrases like "this afternoon", "this evening"
         """
         words = user_input.lower().split()
         if len(words) >= 3 and words[0] == "remind" and words[1] in ("me", "us"):
-            return words[2:4]
-        return words[:2]
+            result = words[2:4]
+            if "this" in result and len(words) > 4:
+                result = words[2:5]
+        else:
+            result = words[:2]
+            if "this" in result and len(words) > 2:
+                result = words[:3]
+        return result
 
     def _validate_day_of_week(
         self, user_input: str, scheduled_time: datetime, current_time: datetime
@@ -915,13 +931,41 @@ class ReminderBot:
 
         Handles:
         - Day names: mon, tue, wed, thu, fri, sat, sun (and variants)
-        - Relative days: today, tdy, tomorrow, tmr, etc.
+        - Relative days: today, tdy, tonight, tomorrow, tmr, etc.
+        - Relative phrases: "this morning", "this afternoon", "this evening"
 
         Returns (corrected_time, was_corrected).
         Only triggers when a day reference is found in the first 2 words
-        (or words 2-4 after "remind me/us").
+        (or words 2-4 after "remind me/us"). Extends by 1 word if "this" is found.
         """
         words_to_check = self._get_words_to_check(user_input)
+
+        # Check consecutive pairs for two-word phrases (e.g., "this afternoon")
+        for i in range(len(words_to_check) - 1):
+            phrase = f"{words_to_check[i]} {words_to_check[i + 1]}"
+            if phrase in self.RELATIVE_PHRASES:
+                days_offset = self.RELATIVE_PHRASES[phrase]
+                expected_date = (current_time + timedelta(days=days_offset)).date()
+
+                if scheduled_time.date() == expected_date:
+                    return scheduled_time, False
+
+                self.logger.warning(
+                    f"Relative phrase mismatch: user said '{phrase}' (expected {expected_date}) "
+                    f"but LLM scheduled for {scheduled_time.date()}. Correcting..."
+                )
+
+                corrected_time = scheduled_time.replace(
+                    year=expected_date.year,
+                    month=expected_date.month,
+                    day=expected_date.day,
+                )
+
+                self.logger.info(
+                    f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
+                    f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
+                )
+                return corrected_time, True
 
         # Check each word for day names or relative days
         for word in words_to_check:
@@ -997,6 +1041,8 @@ class ReminderBot:
         - DD/MM HH:MM (24hr): 15/02 18:00
         - DD/MM/YY HH:MM (24hr): 15/02/26 18:00
         - DD/MM HHam/pm: 15/02 6pm, 15/02 6:30pm
+        - Day name + time: thursday 9pm, fri 18:00
+        - today/tomorrow + time: today 9pm, tmr 18:00
         - HH:MM (24hr, today): 18:00
         - HHam/pm (today): 6pm, 6:30pm
         """
@@ -1010,7 +1056,7 @@ class ReminderBot:
         parts = time_str.split()
 
         if len(parts) == 2:
-            # Date + time: "15/02 18:00" or "15/02 6pm"
+            # Date + time: "15/02 18:00" or "thursday 9pm"
             date_part, time_part = parts
         elif len(parts) == 1:
             # Time only: "18:00" or "6pm"
@@ -1062,6 +1108,20 @@ class ReminderBot:
                             year += 1
                     except ValueError:
                         return None
+                elif date_part in self.DAY_NAMES:
+                    # Day name: thursday, fri, etc. → next nearest occurrence
+                    target_weekday = self.DAY_NAMES[date_part]
+                    current_weekday = now.weekday()
+                    days_ahead = target_weekday - current_weekday
+                    if days_ahead <= 0:
+                        days_ahead += 7
+                    target_date = now.date() + timedelta(days=days_ahead)
+                    day, month, year = target_date.day, target_date.month, target_date.year
+                elif date_part in self.RELATIVE_DAYS:
+                    # Relative day: today, tdy, tomorrow, tmr, etc.
+                    days_offset = self.RELATIVE_DAYS[date_part]
+                    target_date = (now + timedelta(days=days_offset)).date()
+                    day, month, year = target_date.day, target_date.month, target_date.year
                 else:
                     return None
         else:
@@ -1464,10 +1524,11 @@ class ReminderBot:
                 "Time formats:\n"
                 "• DD/MM HH:MM → 15/02 18:00\n"
                 "• DD/MM HHam/pm → 15/02 6pm\n"
-                "• HH:MM → 18:00 (today)\n"
+                "• Day HHam/pm → thursday 9pm\n"
                 "• HHam/pm → 6pm (today)\n\n"
                 "Examples:\n"
                 "• /settime 135 15/02 6pm\n"
+                "• /settime 135 thu 9pm\n"
                 "• /settime 135 18:00\n"
                 "• Reply + /settime 6pm"
             )
@@ -1496,6 +1557,7 @@ class ReminderBot:
                 "Expected formats:\n"
                 "• DD/MM HH:MM → 15/02 18:00\n"
                 "• DD/MM HHam/pm → 15/02 6pm\n"
+                "• Day HHam/pm → thu 9pm\n"
                 "• HH:MM → 18:00 (today)\n"
                 "• HHam/pm → 6pm (today)"
             )
@@ -1621,6 +1683,9 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.5.9 (Feb 2026)\n"
+            "• /settime accepts day names (thu 9pm) and today/tmr\n"
+            "• Validation handles 'this afternoon/evening/morning'\n\n"
             "v1.5.8 (Feb 2026)\n"
             "• Validation now handles today/tomorrow (tdy, tmr, etc.)\n\n"
             "v1.5.7 (Feb 2026)\n"
