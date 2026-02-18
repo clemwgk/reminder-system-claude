@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-02-17
+
+### Added
+- **Time-of-day defaults**: Explicit rules for "tomorrow afternoon" (14:00), "today/this morning/afternoon/evening", and "tomorrow night" (20:00)
+- **Append to reminders**: Use `/edit <id> ++ text` to append instead of replace
+- **Natural language search**: Ask "do I have a reminder for X?" to find matching reminders
+
+### Changed
+- Past time-of-day references (e.g., "this morning" when it's afternoon) now roll over to next day
+
 ## [1.5.9] - 2026-02-14
 
 ### Added

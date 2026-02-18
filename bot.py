@@ -92,7 +92,7 @@ Current date and time: {current_time.strftime('%Y-%m-%d %H:%M:%S %A')} (Singapor
 User input: "{user_input}"
 
 Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
-- "action": one of "create", "cancel", "modify", or "list"
+- "action": one of "create", "cancel", "modify", "list", or "search"
 - "task": the thing to be reminded about (string, required for create/modify, null for others)
 - "category": one of "general", "bill", or "food_expiry" (for create/modify)
 - "scheduled_time": ISO format datetime if a specific time was mentioned, or null
@@ -100,12 +100,14 @@ Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
 - "target_id": the ID of an existing reminder to cancel/modify, or null
 - "shared": true if the user said "remind us" or wants to notify all users, false otherwise
 - "time_confidence": 0-100 score for how confident you are about scheduled_time (null if no time)
+- "search_query": the search term for action "search" (null for other actions)
 
 ACTION DETECTION RULES (VERY IMPORTANT):
 - "create": User wants a NEW reminder (e.g., "remind me to...", "set a reminder for..."). This is the DEFAULT action.
 - "cancel": User wants to REMOVE/DELETE a reminder (e.g., "remove that", "cancel reminder 5", "delete the last one")
 - "modify": User wants to CHANGE an existing reminder (e.g., "change reminder 3 to 5pm", "update the last one")
 - "list": User wants to SEE their reminders (e.g., "show my reminders", "what reminders do I have")
+- "search": User wants to FIND specific reminders (e.g., "do I have a reminder for X?", "find reminder about X", "search for X", "is there a reminder for X")
 
 IMPORTANT: If the user's message could be a new reminder task, always use "create". Only use cancel/modify/list when explicitly requested.
 
@@ -125,11 +127,23 @@ Rules for category detection:
 Rules for scheduled_time:
 - "tomorrow" or "tmr" = next day at 09:00
 - "tomorrow morning" = next day at 09:00
+- "tomorrow afternoon" = next day at 14:00
 - "tomorrow evening" = next day at 18:00
+- "tomorrow night" = next day at 20:00
+- "today morning" or "this morning" = today at 09:00, or tomorrow 09:00 if already past
+- "today afternoon" or "this afternoon" = today at 14:00, or tomorrow 14:00 if already past
+- "today evening" or "this evening" = today at 18:00, or tomorrow 18:00 if already past
+- "tonight" / "tonite" / "2nite" = today at 20:00, or tomorrow 20:00 if already past
 - "next week" or "nxt wk" = same day next week at 09:00
 - "in X hours/minutes" = current time + X
 - If only a time like "3pm" is given, assume today if it's still before that time, otherwise tomorrow
 - If no time mentioned at all, set to null (the system will apply category defaults)
+
+Time-of-day defaults:
+- morning = 09:00
+- afternoon = 14:00
+- evening = 18:00
+- night = 20:00
 
 Relative time with "before":
 - "X days/weeks before [date/month]" = subtract X days/weeks from that date
@@ -179,10 +193,11 @@ Ask yourself: "Could the user have meant a different date/time? Did I interpret 
 - null: No time was mentioned
 
 Example responses:
-{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null}}
-{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false, "time_confidence": null}}
-{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false, "time_confidence": 95}}
-{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false, "time_confidence": 85}}
+{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "search_query": null}}
+{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false, "time_confidence": null, "search_query": null}}
+{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false, "time_confidence": 95, "search_query": null}}
+{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false, "time_confidence": 85, "search_query": null}}
+{{"action": "search", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "search_query": "pediatrician"}}
 """
 
 
@@ -700,6 +715,22 @@ class ReminderDB:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def search_reminders_for_user(self, user_id: int, query: str) -> list[dict]:
+        """Search pending reminders by task text, visible to a specific user (own + shared)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE status = 'pending'
+                AND (created_by = ? OR notify_all = 1)
+                AND task LIKE ?
+                ORDER BY scheduled_time ASC
+                """,
+                (user_id, f"%{query}%"),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def get_todays_reminders_for_user(self, user_id: int, today_start: datetime, today_end: datetime) -> list[dict]:
         """Get pending reminders scheduled for today, visible to a specific user."""
         with sqlite3.connect(self.db_path) as conn:
@@ -1189,6 +1220,9 @@ class ReminderBot:
             "• 'remind us to call the plumber' (notifies both)\n"
             "• 'pay credit card bill' (schedules for Saturday)\n"
             "• 'milk expires in 3 days' (reminds day before)\n\n"
+            "Searching reminders:\n"
+            "• 'do I have a reminder for pediatrician?'\n"
+            "• 'find reminder about groceries'\n\n"
             "Modifying reminders (natural language):\n"
             "• 'cancel that last reminder'\n"
             "• 'remove reminder 5'\n"
@@ -1200,7 +1234,7 @@ class ReminderBot:
             "/cancel <id> [id2...] - Cancel reminder(s)\n"
             "/delay <id> <hours> - Delay by X hours\n"
             "/snooze <id> [mins] - Snooze for 15 mins (or specify)\n"
-            "/edit <id> <text> - Edit reminder text\n"
+            "/edit <id> [++] <text> - Edit (or ++ append to) reminder\n"
             "/settime <id> <time> - Set exact time (e.g., 15/02 6pm)\n"
             "/copy <id> <time> - Copy reminder to new time\n"
             "/changelog - Show recent updates\n"
@@ -1211,7 +1245,9 @@ class ReminderBot:
             "• Or just type new text to edit the reminder\n\n"
             "Time shorthands:\n"
             "• tmr = tomorrow\n"
-            "• nxt wk = next week\n\n"
+            "• nxt wk = next week\n"
+            "• tomorrow morning/afternoon/evening/night\n"
+            "• this morning/afternoon/evening\n\n"
             "Categories & defaults:\n"
             "• Bills → Saturday 9 AM\n"
             "• Food expiry → Day before, 9 AM & 6 PM\n"
@@ -1438,7 +1474,12 @@ class ReminderBot:
             )
 
     async def edit_reminder(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /edit command - edit the task text of a pending reminder."""
+        """Handle /edit command - edit the task text of a pending reminder.
+
+        Supports append mode with ++ prefix:
+        - /edit <id> <text> → replaces entire text
+        - /edit <id> ++ <text> → appends to existing text
+        """
         user_id = update.effective_user.id
         if not self._is_authorized(user_id):
             return
@@ -1465,8 +1506,9 @@ class ReminderBot:
             new_task = " ".join(context.args[1:])
         else:
             await update.message.reply_text(
-                "Usage: /edit <reminder_id> <new text>\n"
+                "Usage: /edit <reminder_id> [++] <new text>\n"
                 "Example: /edit 48 buy infant formula by 23 Jan\n"
+                "Append: /edit 48 ++ also get diapers\n"
                 "Or reply to a reminder message with /edit <new text>"
             )
             return
@@ -1488,9 +1530,24 @@ class ReminderBot:
             )
             return
 
+        # Check for append mode (++ prefix)
+        append_mode = False
+        if new_task.startswith("++ "):
+            append_mode = True
+            new_task = new_task[3:]  # Remove "++ "
+        elif new_task.startswith("++"):
+            append_mode = True
+            new_task = new_task[2:]  # Remove "++"
+
+        if append_mode:
+            # Append to existing task text
+            existing_task = reminder["task"]
+            new_task = f"{existing_task}, {new_task}"
+
         if self.db.modify_reminder(reminder_id, new_task=new_task):
+            mode_text = "appended" if append_mode else "updated"
             await update.message.reply_text(
-                f"Reminder [{reminder_id}] updated:\n'{new_task}'"
+                f"Reminder [{reminder_id}] {mode_text}:\n'{new_task}'"
             )
         else:
             await update.message.reply_text("Failed to edit reminder.")
@@ -1806,18 +1863,32 @@ class ReminderBot:
                         return
 
                     elif user_input_lower.startswith("/edit"):
-                        # Parse new text from /edit new task text
+                        # Parse new text from /edit new task text (supports ++ for append)
                         new_task = user_input[5:].strip()  # Remove "/edit"
                         if new_task:
+                            # Check for append mode (++ prefix)
+                            append_mode = False
+                            if new_task.startswith("++ "):
+                                append_mode = True
+                                new_task = new_task[3:]  # Remove "++ "
+                            elif new_task.startswith("++"):
+                                append_mode = True
+                                new_task = new_task[2:]  # Remove "++"
+
+                            if append_mode:
+                                # Append to existing task text
+                                new_task = f"{reminder['task']}, {new_task}"
+
                             if self.db.modify_reminder(reminder_id, new_task=new_task):
-                                await update.message.reply_text(f"Reminder [{reminder_id}] updated:\n'{new_task}'")
+                                mode_text = "appended" if append_mode else "updated"
+                                await update.message.reply_text(f"Reminder [{reminder_id}] {mode_text}:\n'{new_task}'")
                             else:
                                 await update.message.reply_text(
                                     f"Reminder [{reminder_id}] not found or already sent.\n"
                                     f"(Only pending reminders can be edited)"
                                 )
                         else:
-                            await update.message.reply_text("Usage: /edit <new task text>")
+                            await update.message.reply_text("Usage: /edit [++] <new task text>")
                         return
 
                     else:
@@ -2019,6 +2090,31 @@ class ReminderBot:
                 await update.message.reply_text(
                     f"Reminder [{target_id}] already sent or cancelled."
                 )
+            return
+
+        elif action == "search":
+            # Search for reminders matching a query
+            search_query = result.get("search_query", "").strip()
+            if not search_query:
+                await update.message.reply_text(
+                    "I couldn't figure out what to search for.\n"
+                    "Try: 'do I have a reminder for pediatrician?' or 'find reminder about groceries'"
+                )
+                return
+
+            reminders = self.db.search_reminders_for_user(user_id, search_query)
+            if not reminders:
+                await update.message.reply_text(f'No reminders found matching "{search_query}".')
+            else:
+                count = len(reminders)
+                plural = "" if count == 1 else "s"
+                lines = [f'Found {count} reminder{plural} matching "{search_query}":\n']
+                for r in reminders:
+                    scheduled = datetime.fromisoformat(r["scheduled_time"])
+                    time_str = scheduled.strftime("%a %d %b, %H:%M")
+                    shared_icon = " 👥" if r.get("notify_all") else ""
+                    lines.append(f"📋 [ID: {r['id']}] {r['task']}{shared_icon}\n   📅 {time_str}")
+                await update.message.reply_text("\n".join(lines))
             return
 
         # Default: CREATE action
