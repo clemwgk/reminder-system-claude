@@ -200,6 +200,34 @@ Example responses:
 {{"action": "search", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "search_query": "pediatrician"}}
 """
 
+    def _parse_llm_json(self, text: str) -> dict:
+        """Parse JSON from model output, tolerating extra wrapper text."""
+        cleaned = text.strip()
+
+        # Clean up potential markdown code blocks
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1]
+            cleaned = cleaned.rsplit("```", 1)[0].strip()
+
+        decoder = json.JSONDecoder()
+
+        # First try strict parse from start
+        try:
+            parsed, _ = decoder.raw_decode(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: locate first JSON object when preface text exists
+        start = cleaned.find("{")
+        if start >= 0:
+            parsed, _ = decoder.raw_decode(cleaned[start:])
+            if isinstance(parsed, dict):
+                return parsed
+
+        raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+
 
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
@@ -237,13 +265,7 @@ class GeminiProvider(LLMProvider):
             # Extract the text response
             text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-            # Clean up potential markdown code blocks
-            text = text.strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]  # Remove first line
-                text = text.rsplit("```", 1)[0]  # Remove last ```
-
-            result = json.loads(text)
+            result = self._parse_llm_json(text)
             return result
 
         except json.JSONDecodeError as e:
@@ -285,12 +307,7 @@ class OllamaProvider(LLMProvider):
 
             text = data.get("response", "").strip()
 
-            # Clean up potential markdown code blocks
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]
-                text = text.rsplit("```", 1)[0]
-
-            result = json.loads(text)
+            result = self._parse_llm_json(text)
             return result
 
         except json.JSONDecodeError as e:
@@ -339,12 +356,7 @@ class OpenAIProvider(LLMProvider):
             # Extract the text response
             text = data["choices"][0]["message"]["content"].strip()
 
-            # Clean up potential markdown code blocks
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]  # Remove first line
-                text = text.rsplit("```", 1)[0]  # Remove last ```
-
-            result = json.loads(text)
+            result = self._parse_llm_json(text)
             return result
 
         except json.JSONDecodeError as e:
@@ -393,12 +405,7 @@ class GroqProvider(LLMProvider):
             # Extract the text response (OpenAI-compatible format)
             text = data["choices"][0]["message"]["content"].strip()
 
-            # Clean up potential markdown code blocks
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]  # Remove first line
-                text = text.rsplit("```", 1)[0]  # Remove last ```
-
-            result = json.loads(text)
+            result = self._parse_llm_json(text)
             return result
 
         except json.JSONDecodeError as e:
