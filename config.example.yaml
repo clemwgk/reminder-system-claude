@@ -33,10 +33,10 @@ llm:
     api_key: "YOUR_GROQ_API_KEY_HERE"
     model: "llama-3.3-70b-versatile"
 
-  # Gemini settings (free tier: 1000 req/day with 2.5-flash-lite)
+  # Gemini settings (free tier: 250 req/day with 2.5-flash)
   gemini:
     api_key: "YOUR_GEMINI_API_KEY_HERE"  # Get from aistudio.google.com
-    model: "gemini-2.5-flash-lite"  # Best free tier option (1000 req/day)
+    model: "gemini-2.5-flash"  # Better quality, 250 req/day free tier
 
   # Ollama settings (used when provider is "ollama")
   # For future migration to Raspberry Pi

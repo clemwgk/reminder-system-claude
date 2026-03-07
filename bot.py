@@ -190,8 +190,12 @@ Users may use Singaporean English patterns. Key differences from US/UK English:
 3. TIME/PLACE FRONTING: Time often comes first without preposition
    - "Friday remind me to..." = "On Friday, remind me to..."
    - "Tomorrow if got time..." = "Tomorrow, if I have time..."
+   - "11am check skincare" = "at 11am, check skincare" (IMPORTANT: extract 11:00)
+   - "3pm call mom" = "at 3pm, call mom" (IMPORTANT: extract 15:00)
+   - "6:30pm dinner" = "at 6:30pm, dinner" (IMPORTANT: extract 18:30)
 
 Always extract the time reference even when prepositions are missing.
+CRITICAL: When a time like "11am" or "3pm" appears at the START of the message, you MUST extract it as scheduled_time.
 
 TIME CONFIDENCE SCORING (0-100):
 Rate how confident YOU are that your scheduled_time matches what the USER INTENDED.
@@ -245,7 +249,7 @@ Example responses:
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-lite"):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
@@ -1051,6 +1055,9 @@ class ReminderBot:
         "this evening": 0,
     }
 
+    # Time pattern for validation (matches 11am, 3pm, 6:30pm, etc.)
+    TIME_PATTERN = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', re.IGNORECASE)
+
     def _get_words_to_check(self, user_input: str) -> list[str]:
         """Get the words to check for day names (limited scope to avoid false positives).
 
@@ -1179,6 +1186,62 @@ class ReminderBot:
 
         # No day reference found in scope - no validation needed
         return scheduled_time, False
+
+    def _validate_time_of_day(
+        self, user_input: str, scheduled_time: Optional[datetime], current_time: datetime
+    ) -> tuple[Optional[datetime], bool]:
+        """Validate and correct time-of-day if LLM missed or got it wrong.
+
+        Scans first few words of user input for explicit time patterns (11am, 3pm, etc.).
+        If found and different from scheduled_time (or scheduled_time is None), corrects it.
+
+        Returns (corrected_time, was_corrected).
+        """
+        words_to_check = self._get_words_to_check(user_input)
+        text_to_check = " ".join(words_to_check)
+
+        match = self.TIME_PATTERN.search(text_to_check)
+        if not match:
+            # No explicit time found in scope - no validation needed
+            return scheduled_time, False
+
+        # Parse the matched time
+        hour = int(match.group(1))
+        minute = int(match.group(2)) if match.group(2) else 0
+        ampm = match.group(3).lower()
+
+        # Convert to 24-hour format
+        if ampm == 'pm' and hour != 12:
+            hour += 12
+        elif ampm == 'am' and hour == 12:
+            hour = 0
+
+        # Check if scheduled_time matches
+        if scheduled_time is not None:
+            if scheduled_time.hour == hour and scheduled_time.minute == minute:
+                return scheduled_time, False
+
+            # Time mismatch - correct it
+            self.logger.warning(
+                f"Time-of-day mismatch: user said '{match.group(0)}' ({hour:02d}:{minute:02d}) "
+                f"but LLM scheduled for {scheduled_time.strftime('%H:%M')}. Correcting..."
+            )
+            corrected_time = scheduled_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        else:
+            # No scheduled_time from LLM - create one for today or tomorrow
+            self.logger.warning(
+                f"Time extraction: user said '{match.group(0)}' but LLM returned null. "
+                f"Setting time to {hour:02d}:{minute:02d}..."
+            )
+            corrected_time = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # If the time has already passed today, schedule for tomorrow
+            if corrected_time <= current_time:
+                corrected_time += timedelta(days=1)
+
+        self.logger.info(
+            f"Time corrected to: {corrected_time.strftime('%Y-%m-%d %H:%M')}"
+        )
+        return corrected_time, True
 
     def _parse_explicit_time(self, time_str: str) -> Optional[datetime]:
         """Parse explicit time format for /settime command.
@@ -2345,6 +2408,7 @@ class ReminderBot:
         # Parse scheduled time if provided
         scheduled_time = None
         day_corrected = False
+        time_corrected = False
         if scheduled_time_str:
             try:
                 scheduled_time = datetime.fromisoformat(scheduled_time_str)
@@ -2356,6 +2420,11 @@ class ReminderBot:
                 )
             except (ValueError, TypeError):
                 scheduled_time = None
+
+        # Apply time-of-day validation (catches cases where LLM missed explicit time)
+        scheduled_time, time_corrected = self._validate_time_of_day(
+            user_input, scheduled_time, current_time
+        )
 
         # Resolve final time(s) using schedule rules
         final_times = self.scheduler.resolve_time(category, scheduled_time, current_time)
@@ -2375,9 +2444,11 @@ class ReminderBot:
         notes = []
         if day_corrected:
             notes.append("⚡ (day-of-week auto-corrected)")
+        if time_corrected:
+            notes.append("⚡ (time auto-corrected)")
         # Show hint if confidence is low (<20%) OR post-validation was triggered
         low_confidence = time_confidence is not None and time_confidence < 20
-        if low_confidence or day_corrected:
+        if low_confidence or day_corrected or time_corrected:
             notes.append("💡 Wrong? Reply /settime DD/MM[/YY] HH:MM or HHam/pm")
         correction_note = "\n" + "\n".join(notes) if notes else ""
 

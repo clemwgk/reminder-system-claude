@@ -184,7 +184,7 @@ llm:
   provider: "gemini"
   gemini:
     api_key: "YOUR_GEMINI_API_KEY"  # From Step 3
-    model: "gemini-2.5-flash-lite"  # Free tier: 1000 req/day
+    model: "gemini-2.5-flash"  # Free tier: 250 req/day
 ```
 
 > **Alternative LLM Providers:** If Gemini doesn't work, you can use OpenAI (`gpt-4o-mini`, ~$0.15/1M tokens) or Groq (`llama-3.3-70b-versatile`, free 14,400 req/day). See `config.example.yaml` for all options.
@@ -467,7 +467,7 @@ Google's free tier VMs can occasionally be preempted. Check:
 | Item | Cost |
 |------|------|
 | Google Cloud | $0 (Always Free e2-micro in us-west1/us-central1/us-east1) |
-| Gemini API (gemini-2.5-flash-lite) | $0 (Free tier: 1,000 req/day) |
+| Gemini API (gemini-2.5-flash) | $0 (Free tier: 250 req/day) |
 | Telegram | $0 |
 | **Total** | **$0/month** |
 

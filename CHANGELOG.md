@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.1] - 2026-03-07
+
+### Added
+- **Time-of-day validation guardrail**: Automatically corrects when LLM misses explicit time in messages like "11am check skincare"
+  - Scans first few words for time patterns (11am, 3pm, 6:30pm, etc.)
+  - Shows "⚡ (time auto-corrected)" indicator when correction is applied
+- Enhanced LLM prompt with time-fronting examples for better accuracy
+
+### Changed
+- **Upgraded default Gemini model** from `gemini-2.5-flash-lite` to `gemini-2.5-flash` for better parsing quality (250 req/day free tier)
+
 ## [1.6.0] - 2026-03-07
 
 ### Added
