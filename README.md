@@ -277,6 +277,24 @@ Say "remind us" instead of "remind me" to notify all authorized users:
 
 Shared reminders show a 👥 icon and will be sent to everyone.
 
+### Recurring Reminders
+
+Create reminders that automatically repeat:
+- "remind me every day at 9am to take vitamins"
+- "remind me weekly on Saturday to water plants"
+- "remind me every weekday at 8am to check emails"
+
+Supported patterns:
+- **daily** - every day
+- **weekly** - same day every week
+- **biweekly** - every two weeks
+- **monthly** - same day every month
+- **yearly** - same day every year
+- **weekdays** - Monday through Friday
+- **weekends** - Saturday and Sunday
+
+Recurring reminders show a 🔄 icon and automatically schedule the next occurrence when sent.
+
 ### Managing Reminders (Natural Language)
 
 You can modify reminders by talking naturally:
@@ -293,6 +311,8 @@ You can modify reminders by talking naturally:
 | `/start` | Welcome message |
 | `/help` | Show help |
 | `/list` | Show all pending reminders |
+| `/recurring` | Show recurring reminders |
+| `/stoprecurring <id>` | Stop a recurring reminder |
 | `/cancel <id>` | Cancel a reminder |
 | `/delay <id> <hours>` | Delay a reminder by X hours |
 | `/snooze <id> [mins]` | Snooze for 15 mins (or specify duration) |

@@ -100,6 +100,7 @@ Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
 - "target_id": the ID of an existing reminder to cancel/modify, or null
 - "shared": true if the user said "remind us" or wants to notify all users, false otherwise
 - "time_confidence": 0-100 score for how confident you are about scheduled_time (null if no time)
+- "recurrence": recurrence pattern if user wants a repeating reminder, or null. Valid patterns: "daily", "weekly", "biweekly", "monthly", "yearly", "weekdays", "weekends"
 - "search_query": the search term for action "search" (null for other actions)
 
 ACTION DETECTION RULES (VERY IMPORTANT):
@@ -118,6 +119,16 @@ TARGET IDENTIFICATION:
 SHARED REMINDERS:
 - If user says "remind us", "we need to", "remind both of us" → set shared: true
 - Default is shared: false (only notify the person who created it)
+
+RECURRING REMINDERS:
+- "every day", "daily", "each day" → recurrence: "daily"
+- "every week", "weekly", "each week" → recurrence: "weekly"
+- "every two weeks", "biweekly", "fortnightly" → recurrence: "biweekly"
+- "every month", "monthly" → recurrence: "monthly"
+- "every year", "yearly", "annually" → recurrence: "yearly"
+- "every weekday", "on weekdays", "monday to friday" → recurrence: "weekdays"
+- "every weekend", "on weekends", "saturdays and sundays" → recurrence: "weekends"
+- If no recurring pattern detected → recurrence: null
 
 Rules for category detection:
 - "bill": anything related to payments, bills, subscriptions, dues, invoices
@@ -193,11 +204,13 @@ Ask yourself: "Could the user have meant a different date/time? Did I interpret 
 - null: No time was mentioned
 
 Example responses:
-{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "search_query": null}}
-{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false, "time_confidence": null, "search_query": null}}
-{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false, "time_confidence": 95, "search_query": null}}
-{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false, "time_confidence": 85, "search_query": null}}
-{{"action": "search", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "search_query": "pediatrician"}}
+{{"action": "create", "task": "pay electricity bill", "category": "bill", "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "recurrence": null, "search_query": null}}
+{{"action": "cancel", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": 5, "shared": false, "time_confidence": null, "recurrence": null, "search_query": null}}
+{{"action": "create", "task": "buy groceries", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "tmr", "target_id": null, "shared": false, "time_confidence": 95, "recurrence": null, "search_query": null}}
+{{"action": "create", "task": "bring milk if go back to Florence", "category": "general", "scheduled_time": "2024-01-24T09:00:00", "time_hint": "Friday", "target_id": null, "shared": false, "time_confidence": 85, "recurrence": null, "search_query": null}}
+{{"action": "create", "task": "take vitamins", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "9am", "target_id": null, "shared": false, "time_confidence": 90, "recurrence": "daily", "search_query": null}}
+{{"action": "create", "task": "water plants", "category": "general", "scheduled_time": "2024-01-20T10:00:00", "time_hint": "Saturday 10am", "target_id": null, "shared": false, "time_confidence": 85, "recurrence": "weekly", "search_query": null}}
+{{"action": "search", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "recurrence": null, "search_query": "pediatrician"}}
 """
 
     def _parse_llm_json(self, text: str) -> dict:
@@ -488,6 +501,15 @@ class ReminderDB:
                 conn.execute("ALTER TABLE reminders ADD COLUMN time_confidence INTEGER")
             except sqlite3.OperationalError:
                 pass  # Column already exists
+            # Add recurrence columns for recurring reminders
+            try:
+                conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_pattern TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                conn.execute("ALTER TABLE reminders ADD COLUMN recurrence_parent_id INTEGER")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             # Create user_preferences table for per-user settings
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_preferences (
@@ -505,13 +527,15 @@ class ReminderDB:
         created_by: int,
         notify_all: bool = False,
         time_confidence: int = None,
+        recurrence_pattern: str = None,
+        recurrence_parent_id: int = None,
     ) -> int:
         """Add a new reminder. Returns the reminder ID."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status, notify_all, time_confidence)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                INSERT INTO reminders (task, category, scheduled_time, created_at, created_by, status, notify_all, time_confidence, recurrence_pattern, recurrence_parent_id)
+                VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
                 """,
                 (
                     task,
@@ -521,6 +545,8 @@ class ReminderDB:
                     created_by,
                     1 if notify_all else 0,
                     time_confidence,
+                    recurrence_pattern,
+                    recurrence_parent_id,
                 ),
             )
             conn.commit()
@@ -792,6 +818,37 @@ class ReminderDB:
         result = self.get_user_preference(user_id, "daily_summary_enabled", 1)
         return result == 1
 
+    def get_recurring_reminders_for_user(self, user_id: int) -> list[dict]:
+        """Get all reminders with recurrence patterns (active recurring series)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reminders
+                WHERE (created_by = ? OR notify_all = 1)
+                AND recurrence_pattern IS NOT NULL
+                AND recurrence_parent_id IS NULL
+                AND status != 'cancelled'
+                ORDER BY scheduled_time ASC
+                """,
+                (user_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def stop_recurrence(self, reminder_id: int) -> bool:
+        """Stop a recurring reminder by clearing its recurrence pattern."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminders
+                SET recurrence_pattern = NULL
+                WHERE id = ?
+                """,
+                (reminder_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
 
 # =============================================================================
 # SCHEDULE RULES
@@ -917,6 +974,57 @@ class ReminderBot:
     def _now(self) -> datetime:
         """Get current time in configured timezone."""
         return datetime.now(self.tz)
+
+    def _calculate_next_recurrence(
+        self, current_time: datetime, pattern: str
+    ) -> Optional[datetime]:
+        """Calculate the next occurrence based on recurrence pattern.
+
+        Patterns: daily, weekly, biweekly, monthly, yearly, weekdays, weekends
+        """
+        if not pattern:
+            return None
+
+        pattern = pattern.lower()
+
+        if pattern == "daily":
+            return current_time + timedelta(days=1)
+
+        elif pattern == "weekly":
+            return current_time + timedelta(weeks=1)
+
+        elif pattern == "biweekly":
+            return current_time + timedelta(weeks=2)
+
+        elif pattern == "monthly":
+            # Add one month (handle varying month lengths)
+            month = current_time.month + 1
+            year = current_time.year
+            if month > 12:
+                month = 1
+                year += 1
+            # Handle edge case: if day doesn't exist in target month (e.g., Jan 31 -> Feb)
+            day = min(current_time.day, 28)  # Safe for all months
+            return current_time.replace(year=year, month=month, day=day)
+
+        elif pattern == "yearly":
+            return current_time.replace(year=current_time.year + 1)
+
+        elif pattern == "weekdays":
+            # Next weekday (Mon-Fri)
+            next_day = current_time + timedelta(days=1)
+            while next_day.weekday() >= 5:  # Saturday=5, Sunday=6
+                next_day += timedelta(days=1)
+            return next_day
+
+        elif pattern == "weekends":
+            # Next weekend day (Sat-Sun)
+            next_day = current_time + timedelta(days=1)
+            while next_day.weekday() < 5:  # Mon-Fri = 0-4
+                next_day += timedelta(days=1)
+            return next_day
+
+        return None
 
     # Day name mappings for post-processing validation
     DAY_NAMES = {
@@ -1227,6 +1335,10 @@ class ReminderBot:
             "• 'remind us to call the plumber' (notifies both)\n"
             "• 'pay credit card bill' (schedules for Saturday)\n"
             "• 'milk expires in 3 days' (reminds day before)\n\n"
+            "Recurring reminders:\n"
+            "• 'remind me every day at 9am to take vitamins'\n"
+            "• 'remind me weekly on Saturday to water plants'\n"
+            "• Patterns: daily, weekly, biweekly, monthly, yearly, weekdays, weekends\n\n"
             "Searching reminders:\n"
             "• 'do I have a reminder for pediatrician?'\n"
             "• 'find reminder about groceries'\n\n"
@@ -1236,6 +1348,8 @@ class ReminderBot:
             "• 'change reminder 3 to tomorrow'\n\n"
             "Commands:\n"
             "/list - Show your pending reminders\n"
+            "/recurring - Show your recurring reminders\n"
+            "/stoprecurring <id> - Stop a recurring reminder\n"
             "/summary - Show daily summary (today + unacknowledged)\n"
             "/dailysummary on|off - Toggle 8 AM summary\n"
             "/cancel <id> [id2...] - Cancel reminder(s)\n"
@@ -1282,7 +1396,8 @@ class ReminderBot:
             scheduled = datetime.fromisoformat(r["scheduled_time"])
             time_str = scheduled.strftime("%a %d %b, %H:%M")
             shared_marker = " 👥" if r.get("notify_all", 0) else ""
-            lines.append(f"[{r['id']}] {r['task']}{shared_marker}\n    📅 {time_str}")
+            recurrence_marker = " 🔄" if r.get("recurrence_pattern") else ""
+            lines.append(f"[{r['id']}] {r['task']}{shared_marker}{recurrence_marker}\n    📅 {time_str}")
 
         await update.message.reply_text("\n".join(lines))
 
@@ -1739,6 +1854,81 @@ class ReminderBot:
             f"Scheduled: {final_time.strftime('%A %d %B, %H:%M')}"
         )
 
+    async def recurring_reminders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /recurring command - list all active recurring reminders."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        reminders = self.db.get_recurring_reminders_for_user(user_id)
+
+        if not reminders:
+            await update.message.reply_text(
+                "No recurring reminders set.\n\n"
+                "Create one with phrases like:\n"
+                "• 'remind me every day at 9am to take vitamins'\n"
+                "• 'remind me weekly on Saturday to water plants'"
+            )
+            return
+
+        lines = ["🔄 <b>Recurring reminders:</b>\n"]
+        for r in reminders:
+            scheduled = datetime.fromisoformat(r["scheduled_time"])
+            time_str = scheduled.strftime("%a %d %b, %H:%M")
+            pattern = r.get("recurrence_pattern", "unknown")
+            shared_marker = " 👥" if r.get("notify_all", 0) else ""
+            lines.append(
+                f"[{r['id']}] {r['task']}{shared_marker}\n"
+                f"    📅 Next: {time_str}\n"
+                f"    🔄 {pattern.capitalize()}"
+            )
+
+        lines.append("\nUse /stoprecurring <id> to stop a recurring reminder.")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+    async def stop_recurring(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /stoprecurring command - stop a recurring reminder."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /stoprecurring <id>\n"
+                "Example: /stoprecurring 42\n\n"
+                "Use /recurring to see your recurring reminders."
+            )
+            return
+
+        try:
+            reminder_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Invalid reminder ID.")
+            return
+
+        # Check reminder exists and user can access
+        reminder = self.db.get_reminder(reminder_id)
+        if not reminder:
+            await update.message.reply_text(f"Reminder [{reminder_id}] not found.")
+            return
+        if not self._can_access(user_id, reminder):
+            await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
+            return
+        if not reminder.get("recurrence_pattern"):
+            await update.message.reply_text(
+                f"Reminder [{reminder_id}] is not a recurring reminder."
+            )
+            return
+
+        if self.db.stop_recurrence(reminder_id):
+            await update.message.reply_text(
+                f"✓ Stopped recurring reminder [{reminder_id}].\n"
+                f"The current scheduled reminder will still fire, but no new ones will be created.\n\n"
+                f"Use /cancel {reminder_id} to also cancel the pending reminder."
+            )
+        else:
+            await update.message.reply_text("Failed to stop recurrence.")
+
     async def changelog_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /changelog command - show recent changes."""
         if not self._is_authorized(update.effective_user.id):
@@ -1747,6 +1937,11 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.6.0 (Mar 2026)\n"
+            "• 🔄 Recurring reminders! Use 'every day', 'weekly', etc.\n"
+            "• /recurring - view your recurring reminders\n"
+            "• /stoprecurring <id> - stop a recurring reminder\n"
+            "• Patterns: daily, weekly, biweekly, monthly, yearly, weekdays, weekends\n\n"
             "v1.5.9 (Feb 2026)\n"
             "• /settime accepts day names (thu 9pm) and today/tmr\n"
             "• Validation handles 'this afternoon/evening/morning'\n\n"
@@ -2129,6 +2324,23 @@ class ReminderBot:
         category = result.get("category", "general")
         scheduled_time_str = result.get("scheduled_time")
         time_confidence = result.get("time_confidence")
+        recurrence = result.get("recurrence")
+
+        # Keyword fallback for recurrence patterns in case LLM misses it
+        recurrence_keywords = {
+            "every day": "daily", "daily": "daily", "each day": "daily",
+            "every week": "weekly", "weekly": "weekly", "each week": "weekly",
+            "every two weeks": "biweekly", "biweekly": "biweekly", "fortnightly": "biweekly",
+            "every month": "monthly", "monthly": "monthly",
+            "every year": "yearly", "yearly": "yearly", "annually": "yearly",
+            "every weekday": "weekdays", "on weekdays": "weekdays", "monday to friday": "weekdays",
+            "every weekend": "weekends", "on weekends": "weekends",
+        }
+        if not recurrence:
+            for phrase, pattern in recurrence_keywords.items():
+                if phrase in user_input_lower:
+                    recurrence = pattern
+                    break
 
         # Parse scheduled time if provided
         scheduled_time = None
@@ -2173,31 +2385,33 @@ class ReminderBot:
             # Multiple reminders (e.g., food expiry)
             ids = []
             for t in final_times:
-                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared, time_confidence=time_confidence)
+                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence)
                 ids.append(rid)
 
             times_str = "\n".join(
                 f"  • {t.strftime('%a %d %b, %H:%M')}" for t in final_times
             )
             shared_note = " 👥 (shared)" if shared else ""
+            recurrence_note = f"\n🔄 Repeats: {recurrence}" if recurrence else ""
             await update.message.reply_text(
                 f"Got it! I'll remind {notify_text}:\n"
                 f"'{task}'{shared_note}\n\n"
                 f"Scheduled times:\n{times_str}\n\n"
-                f"Category: {category}\n"
+                f"Category: {category}{recurrence_note}\n"
                 f"IDs: {ids}{correction_note}"
             )
         else:
             # Single reminder
-            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared, time_confidence=time_confidence)
+            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence)
             time_str = final_times.strftime("%A %d %B, %H:%M")
             shared_note = " 👥 (shared)" if shared else ""
+            recurrence_note = f"\n🔄 Repeats: {recurrence}" if recurrence else ""
 
             await update.message.reply_text(
                 f"Got it! I'll remind {notify_text}:\n"
                 f"'{task}'{shared_note}\n\n"
                 f"Scheduled: {time_str}\n"
-                f"Category: {category}\n"
+                f"Category: {category}{recurrence_note}\n"
                 f"ID: [{reminder_id}]{correction_note}"
             )
 
@@ -2269,12 +2483,13 @@ class ReminderBot:
                     recipients = [reminder["created_by"]]
 
                 shared_note = " 👥" if notify_all else ""
+                recurrence_note = " 🔄" if reminder.get("recurrence_pattern") else ""
                 reminder_id = reminder['id']
 
                 # Pop formatting with horizontal lines
                 message = (
                     f"━━━━━━━━━━━━━━━\n"
-                    f"🔔 <b>Reminder</b>{shared_note}\n"
+                    f"🔔 <b>Reminder</b>{shared_note}{recurrence_note}\n"
                     f"━━━━━━━━━━━━━━━\n\n"
                     f"📌 {reminder['task']}\n\n"
                     f"(ID: {reminder_id})"
@@ -2306,6 +2521,30 @@ class ReminderBot:
                         self.logger.error(f"Failed to send reminder {reminder['id']} to {user_id}: {e}")
 
                 self.db.mark_sent(reminder["id"])
+
+                # Handle recurring reminders: create next occurrence
+                recurrence_pattern = reminder.get("recurrence_pattern")
+                if recurrence_pattern:
+                    scheduled_time = datetime.fromisoformat(reminder["scheduled_time"])
+                    if scheduled_time.tzinfo is None:
+                        scheduled_time = scheduled_time.replace(tzinfo=self.tz)
+                    next_time = self._calculate_next_recurrence(scheduled_time, recurrence_pattern)
+                    if next_time:
+                        # Get parent ID (original recurring reminder)
+                        parent_id = reminder.get("recurrence_parent_id") or reminder["id"]
+                        new_id = self.db.add_reminder(
+                            task=reminder["task"],
+                            category=reminder["category"],
+                            scheduled_time=next_time,
+                            created_by=reminder["created_by"],
+                            notify_all=bool(notify_all),
+                            recurrence_pattern=recurrence_pattern,
+                            recurrence_parent_id=parent_id,
+                        )
+                        self.logger.info(
+                            f"Created next recurring reminder [{new_id}] for "
+                            f"{next_time.strftime('%Y-%m-%d %H:%M')} (parent: {parent_id})"
+                        )
 
             except Exception as e:
                 self.logger.error(f"Failed to process reminder {reminder['id']}: {e}")
@@ -2415,6 +2654,8 @@ class ReminderBot:
         app.add_handler(CommandHandler("copy", self.copy_reminder))
         app.add_handler(CommandHandler("summary", self.summary_command))
         app.add_handler(CommandHandler("dailysummary", self.dailysummary_toggle))
+        app.add_handler(CommandHandler("recurring", self.recurring_reminders))
+        app.add_handler(CommandHandler("stoprecurring", self.stop_recurring))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
         app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(
