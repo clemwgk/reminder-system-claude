@@ -1079,7 +1079,7 @@ class ReminderBot:
 
     def _validate_day_of_week(
         self, user_input: str, scheduled_time: datetime, current_time: datetime
-    ) -> tuple[datetime, bool]:
+    ) -> tuple[datetime, bool, bool]:
         """Validate and correct day reference if LLM got it wrong.
 
         Handles:
@@ -1087,7 +1087,7 @@ class ReminderBot:
         - Relative days: today, tdy, tonight, tomorrow, tmr, etc.
         - Relative phrases: "this morning", "this afternoon", "this evening"
 
-        Returns (corrected_time, was_corrected).
+        Returns (corrected_time, was_corrected, day_reference_found).
         Only triggers when a day reference is found in the first 2 words
         (or words 2-4 after "remind me/us"). Extends by 1 word if "this" is found.
         """
@@ -1101,7 +1101,7 @@ class ReminderBot:
                 expected_date = (current_time + timedelta(days=days_offset)).date()
 
                 if scheduled_time.date() == expected_date:
-                    return scheduled_time, False
+                    return scheduled_time, False, True
 
                 self.logger.warning(
                     f"Relative phrase mismatch: user said '{phrase}' (expected {expected_date}) "
@@ -1118,7 +1118,7 @@ class ReminderBot:
                     f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
                     f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
                 )
-                return corrected_time, True
+                return corrected_time, True, True
 
         # Check each word for day names or relative days
         for word in words_to_check:
@@ -1130,7 +1130,7 @@ class ReminderBot:
 
                 # Check if scheduled_time falls on the correct day
                 if scheduled_time.weekday() == target_weekday:
-                    return scheduled_time, False
+                    return scheduled_time, False, True
 
                 # LLM got it wrong - calculate the correct date
                 self.logger.warning(
@@ -1155,7 +1155,7 @@ class ReminderBot:
                     f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
                     f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
                 )
-                return corrected_time, True
+                return corrected_time, True, True
 
             # Check for relative days (today, tomorrow, etc.)
             if clean_word in self.RELATIVE_DAYS:
@@ -1164,7 +1164,7 @@ class ReminderBot:
 
                 # Check if scheduled_time falls on the correct date
                 if scheduled_time.date() == expected_date:
-                    return scheduled_time, False
+                    return scheduled_time, False, True
 
                 # LLM got it wrong - correct to the expected date
                 self.logger.warning(
@@ -1182,18 +1182,22 @@ class ReminderBot:
                     f"Corrected scheduled time: {scheduled_time.strftime('%Y-%m-%d %H:%M')} → "
                     f"{corrected_time.strftime('%Y-%m-%d %H:%M')}"
                 )
-                return corrected_time, True
+                return corrected_time, True, True
 
         # No day reference found in scope - no validation needed
-        return scheduled_time, False
+        return scheduled_time, False, False
 
     def _validate_time_of_day(
-        self, user_input: str, scheduled_time: Optional[datetime], current_time: datetime
+        self, user_input: str, scheduled_time: Optional[datetime],
+        current_time: datetime, day_reference_found: bool = True
     ) -> tuple[Optional[datetime], bool]:
         """Validate and correct time-of-day if LLM missed or got it wrong.
 
         Scans first few words of user input for explicit time patterns (11am, 3pm, etc.).
         If found and different from scheduled_time (or scheduled_time is None), corrects it.
+
+        When day_reference_found is False (no day specified in scoped words), also validates
+        the date: defaults to today if the time hasn't passed, tomorrow if it has.
 
         Returns (corrected_time, was_corrected).
         """
@@ -1219,6 +1223,25 @@ class ReminderBot:
         # Check if scheduled_time matches
         if scheduled_time is not None:
             if scheduled_time.hour == hour and scheduled_time.minute == minute:
+                # Time matches, but if no day reference was found, validate the date too
+                if not day_reference_found:
+                    expected = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    expected_date = current_time.date() if expected > current_time else (current_time + timedelta(days=1)).date()
+                    if scheduled_time.date() != expected_date:
+                        self.logger.warning(
+                            f"Date correction for time-only input: user said '{match.group(0)}' "
+                            f"(no day reference), expected date {expected_date} "
+                            f"but LLM scheduled for {scheduled_time.date()}. Correcting..."
+                        )
+                        corrected_time = scheduled_time.replace(
+                            year=expected_date.year,
+                            month=expected_date.month,
+                            day=expected_date.day,
+                        )
+                        self.logger.info(
+                            f"Date corrected to: {corrected_time.strftime('%Y-%m-%d %H:%M')}"
+                        )
+                        return corrected_time, True
                 return scheduled_time, False
 
             # Time mismatch - correct it
@@ -1227,6 +1250,15 @@ class ReminderBot:
                 f"but LLM scheduled for {scheduled_time.strftime('%H:%M')}. Correcting..."
             )
             corrected_time = scheduled_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # If no day reference was found, also correct the date
+            if not day_reference_found:
+                expected = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                expected_date = current_time.date() if expected > current_time else (current_time + timedelta(days=1)).date()
+                corrected_time = corrected_time.replace(
+                    year=expected_date.year,
+                    month=expected_date.month,
+                    day=expected_date.day,
+                )
         else:
             # No scheduled_time from LLM - create one for today or tomorrow
             self.logger.warning(
@@ -2408,6 +2440,7 @@ class ReminderBot:
         # Parse scheduled time if provided
         scheduled_time = None
         day_corrected = False
+        day_found = False
         time_corrected = False
         if scheduled_time_str:
             try:
@@ -2415,15 +2448,16 @@ class ReminderBot:
                 if scheduled_time.tzinfo is None:
                     scheduled_time = scheduled_time.replace(tzinfo=self.tz)
                 # Apply day-of-week validation (limited scope to avoid false positives)
-                scheduled_time, day_corrected = self._validate_day_of_week(
+                scheduled_time, day_corrected, day_found = self._validate_day_of_week(
                     user_input, scheduled_time, current_time
                 )
             except (ValueError, TypeError):
                 scheduled_time = None
 
         # Apply time-of-day validation (catches cases where LLM missed explicit time)
+        # When no day reference was found in scoped words, also validates the date
         scheduled_time, time_corrected = self._validate_time_of_day(
-            user_input, scheduled_time, current_time
+            user_input, scheduled_time, current_time, day_reference_found=day_found
         )
 
         # Resolve final time(s) using schedule rules
