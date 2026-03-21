@@ -1072,8 +1072,8 @@ class ReminderBot:
         "this evening": 0,
     }
 
-    # Time pattern for validation (matches 11am, 3pm, 6:30pm, etc.)
-    TIME_PATTERN = re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', re.IGNORECASE)
+    # Time pattern for validation (matches 11am, 3pm, 6:30pm, 855am, 1030pm, etc.)
+    TIME_PATTERN = re.compile(r'\b(\d{1,4})(?::(\d{2}))?\s*(am|pm)\b', re.IGNORECASE)
 
     def _get_words_to_check(self, user_input: str) -> list[str]:
         """Get the words to check for day names (limited scope to avoid false positives).
@@ -1219,17 +1219,32 @@ class ReminderBot:
         Returns (corrected_time, was_corrected).
         """
         words_to_check = self._get_words_to_check(user_input)
-        text_to_check = " ".join(words_to_check)
+        text_to_check = " ".join(w.rstrip(":;,") for w in words_to_check)
 
         match = self.TIME_PATTERN.search(text_to_check)
         if not match:
             # No explicit time found in scope - no validation needed
             return scheduled_time, False
 
-        # Parse the matched time
-        hour = int(match.group(1))
-        minute = int(match.group(2)) if match.group(2) else 0
+        # Parse the matched time (supports shorthand like 855am → 8:55am, 1030pm → 10:30pm)
+        raw_hour = match.group(1)
+        if match.group(2):
+            # Explicit colon format: "8:55am"
+            hour = int(raw_hour)
+            minute = int(match.group(2))
+        elif len(raw_hour) >= 3:
+            # Shorthand: "855am" → 8:55, "1030pm" → 10:30
+            minute = int(raw_hour[-2:])
+            hour = int(raw_hour[:-2])
+        else:
+            # Simple: "8am" → 8:00
+            hour = int(raw_hour)
+            minute = 0
         ampm = match.group(3).lower()
+
+        # Validate parsed values
+        if not (1 <= hour <= 12 and 0 <= minute <= 59):
+            return scheduled_time, False
 
         # Convert to 24-hour format
         if ampm == 'pm' and hour != 12:
@@ -1797,18 +1812,25 @@ class ReminderBot:
 
         reply_id = await self._get_reminder_id_from_reply(update, context)
 
-        if len(context.args) >= 2:
-            # /settime <id> <time>
+        if reply_id and context.args:
+            # Reply mode: check if first arg is a reminder ID or part of the time
+            try:
+                candidate_id = int(context.args[0])
+                # First arg is an integer — treat as explicit ID override
+                reminder_id = candidate_id
+                time_str = " ".join(context.args[1:]) if len(context.args) > 1 else None
+            except ValueError:
+                # First arg is NOT an integer — use reply_id, all args are the time
+                reminder_id = reply_id
+                time_str = " ".join(context.args)
+        elif len(context.args) >= 2:
+            # No reply: /settime <id> <time>
             try:
                 reminder_id = int(context.args[0])
                 time_str = " ".join(context.args[1:])
             except ValueError:
                 await update.message.reply_text("Invalid reminder ID.")
                 return
-        elif len(context.args) == 1 and reply_id:
-            # Reply + /settime <time>
-            reminder_id = reply_id
-            time_str = context.args[0]
         else:
             await update.message.reply_text(
                 "Usage: /settime <id> <time>\n\n"
@@ -1821,8 +1843,13 @@ class ReminderBot:
                 "• /settime 135 15/02 6pm\n"
                 "• /settime 135 thu 9pm\n"
                 "• /settime 135 18:00\n"
-                "• Reply + /settime 6pm"
+                "• Reply + /settime 6pm\n"
+                "• Reply + /settime 21/03 08:55"
             )
+            return
+
+        if not time_str:
+            await update.message.reply_text("Please provide a time.")
             return
 
         # Check reminder exists and user can access
