@@ -32,6 +32,8 @@ from telegram.ext import (
     filters,
 )
 
+logger = logging.getLogger(__name__)
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -249,9 +251,10 @@ Example responses:
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite-preview", fallback_model: str = None):
         self.api_key = api_key
         self.model = model
+        self.fallback_model = fallback_model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
     async def parse_reminder(
@@ -275,9 +278,22 @@ class GeminiProvider(LLMProvider):
                 async with session.post(url, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
-                        return {"error": f"Gemini API error: {error_text}"}
-
-                    data = await response.json()
+                        # Try fallback model if available
+                        if self.fallback_model:
+                            logger.warning(
+                                f"Primary model {self.model} failed (HTTP {response.status}), "
+                                f"falling back to {self.fallback_model}"
+                            )
+                            fallback_url = f"{self.base_url}/models/{self.fallback_model}:generateContent?key={self.api_key}"
+                            async with session.post(fallback_url, json=payload) as fallback_response:
+                                if fallback_response.status != 200:
+                                    fallback_error = await fallback_response.text()
+                                    return {"error": f"Gemini API error (both models failed): {fallback_error}"}
+                                data = await fallback_response.json()
+                        else:
+                            return {"error": f"Gemini API error: {error_text}"}
+                    else:
+                        data = await response.json()
 
             # Extract the text response
             text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -439,6 +455,7 @@ def create_llm_provider(config: dict) -> LLMProvider:
         return GeminiProvider(
             api_key=config["llm"]["gemini"]["api_key"],
             model=config["llm"]["gemini"]["model"],
+            fallback_model=config["llm"]["gemini"].get("fallback_model"),
         )
     elif provider_name == "ollama":
         return OllamaProvider(
