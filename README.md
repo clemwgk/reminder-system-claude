@@ -284,6 +284,8 @@ Create reminders that automatically repeat:
 - "remind me every day at 9am to take vitamins"
 - "remind me weekly on Saturday to water plants"
 - "remind me every weekday at 8am to check emails"
+- "remind me every week to water plants 4 times"
+- "remind me daily to exercise until end of 2026"
 
 Supported patterns:
 - **daily** - every day
@@ -293,6 +295,13 @@ Supported patterns:
 - **yearly** - same day every year
 - **weekdays** - Monday through Friday
 - **weekends** - Saturday and Sunday
+
+You can limit recurrence with a count or end date:
+- **Count**: "every week 4 times" — stops after 4 occurrences
+- **End date**: "every day until Dec 2026" — stops after that date
+- **Infinite**: default if neither is specified — repeats until you stop it
+
+Use `/setrecurrence` to convert an existing reminder to recurring, change cadence, or set/remove end constraints.
 
 Recurring reminders show a 🔄 icon and automatically schedule the next occurrence when sent.
 
@@ -314,6 +323,7 @@ You can modify reminders by talking naturally:
 | `/list` | Show all pending reminders |
 | `/recurring` | Show recurring reminders |
 | `/stoprecurring <id>` | Stop a recurring reminder |
+| `/setrecurrence <id> <pattern> [N times] [until <date>]` | Set or change recurrence on a reminder |
 | `/cancel <id>` | Cancel a reminder |
 | `/delay <id> <hours>` | Delay a reminder by X hours |
 | `/snooze <id> [mins]` | Snooze for 15 mins (or specify duration) |
