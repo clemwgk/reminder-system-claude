@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-04-12
+
+### Added
+- **Multi-task lists**: Send a numbered list (e.g., "10pm:\n1. Buy milk\n2. Call mom") and each item becomes a separate reminder at the same time
+- **Stop Series button**: Recurring reminder notifications now show a 🛑 Stop button to stop the entire series in one tap
+- **Relative snooze buttons**: New "+1d" and "+1w" buttons snooze from the original scheduled time (not current time) — a 9am reminder tapped at 3pm reschedules to 9am next day
+
+### Changed
+- **Snooze buttons reworked**: Replaced `15m | 1h | 1d` with `1h | 1d | +1d | +1w`
+- `/cancel` on a sent recurring reminder now auto-stops the whole series (previously said "already sent or cancelled")
+- `/stoprecurring` now accepts any reminder ID in a series (parent or child) and cancels all pending instances
+
+### Fixed
+- **Task text time-stripping**: LLM no longer strips content-time references from task text (e.g., "tmr 1030am: car wash at 1130am" now preserves "car wash at 1130am" instead of just "car wash")
+
 ## [1.6.1] - 2026-03-07
 
 ### Added

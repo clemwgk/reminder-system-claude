@@ -95,7 +95,8 @@ User input: "{user_input}"
 
 Respond with ONLY a JSON object (no markdown, no explanation) with these fields:
 - "action": one of "create", "cancel", "modify", "list", or "search"
-- "task": the thing to be reminded about (string, required for create/modify, null for others)
+- "task": the thing to be reminded about (string, required for create/modify when there's ONE task; null when "tasks" array is used or for non-create actions). IMPORTANT: preserve time references that are PART OF THE CONTENT (e.g., "car wash at 1130am" — the 1130am is when the appointment is, not when to remind). Only remove the scheduling time reference (the one extracted to scheduled_time).
+- "tasks": array of task strings when the user provides a LIST of separate tasks (numbered/bulleted), or null. All tasks in the list share the same scheduled_time, category, recurrence, and shared fields. When "tasks" is non-null, set "task" to null.
 - "category": one of "general", "bill", or "food_expiry" (for create/modify)
 - "scheduled_time": ISO format datetime if a specific time was mentioned, or null
 - "time_hint": the original time reference from the user, or null
@@ -115,6 +116,20 @@ ACTION DETECTION RULES (VERY IMPORTANT):
 - "search": User wants to FIND specific reminders (e.g., "do I have a reminder for X?", "find reminder about X", "search for X", "is there a reminder for X")
 
 IMPORTANT: If the user's message could be a new reminder task, always use "create". Only use cancel/modify/list when explicitly requested.
+
+MULTI-TASK LISTS (added because the LLM previously returned a single "task" string when users sent numbered lists like "10pm: 1. X 2. Y", causing only one reminder to be created instead of one per item):
+- If the user provides a numbered or bulleted list of SEPARATE tasks (e.g. "10pm:\n1. Buy milk\n2. Call mom"), extract each as its own entry in the "tasks" array and set "task" to null.
+- All items in "tasks" share the same scheduled_time, category, recurrence, and shared fields.
+- Do NOT split a single sentence that merely mentions multiple things (e.g. "buy eggs and milk" is ONE task, not two).
+- A list of one item should still use "task" (not "tasks").
+
+TASK CONTENT PRESERVATION (added because the LLM was stripping ALL time references from task text, not just the scheduling one — e.g. "tmr 1030am: car wash at 1130am" became task "car wash" instead of "car wash at 1130am", losing the appointment time which is meaningful content):
+- When a message contains MULTIPLE time references, only ONE of them is the scheduling time (the one extracted to scheduled_time). Other time references are CONTENT and must stay in the task text.
+- The scheduling time is typically the first time reference, or the one introduced with "remind me", "tmr", "tomorrow", or a colon separator (e.g. "10am: call mom" — 10am is scheduling, rest is content).
+- Content-time examples that must be KEPT in the task text: "car wash at 1130am", "meeting at 3pm", "dentist at 2", "movie at 8pm", "pick up kids at 5".
+- Example: "tmr 1030am: car wash at 1130am" → scheduled_time = tomorrow 10:30, task = "car wash at 1130am"
+- Example: "remind me at 9am to call mom at 3pm" → scheduled_time = 09:00, task = "call mom at 3pm"
+- If the whole message is a single task with one time (e.g. "call mom at 3pm"), the time is both the schedule AND the only content — the task can drop it to just "call mom".
 
 TARGET IDENTIFICATION:
 - If user says "the last one", "that one", "that reminder", "the previous one" → use the most recent reminder ID from context
@@ -227,6 +242,8 @@ Example responses:
 {{"action": "create", "task": "take vitamins", "category": "general", "scheduled_time": "2024-01-16T09:00:00", "time_hint": "9am", "target_id": null, "shared": false, "time_confidence": 90, "recurrence": "daily", "search_query": null}}
 {{"action": "create", "task": "water plants", "category": "general", "scheduled_time": "2024-01-20T10:00:00", "time_hint": "Saturday 10am", "target_id": null, "shared": false, "time_confidence": 85, "recurrence": "weekly", "search_query": null}}
 {{"action": "search", "task": null, "category": null, "scheduled_time": null, "time_hint": null, "target_id": null, "shared": false, "time_confidence": null, "recurrence": null, "search_query": "pediatrician"}}
+{{"action": "create", "task": "car wash at 1130am", "tasks": null, "category": "general", "scheduled_time": "2024-01-16T10:30:00", "time_hint": "tmr 1030am", "target_id": null, "shared": false, "time_confidence": 95, "recurrence": null, "search_query": null}}
+{{"action": "create", "task": null, "tasks": ["Pack clothes to bring for mom", "Pack airtumtec wipes"], "category": "general", "scheduled_time": "2024-01-15T22:00:00", "time_hint": "10pm", "target_id": null, "shared": false, "time_confidence": 90, "recurrence": null, "search_query": null}}
 """
 
     def _parse_llm_json(self, text: str) -> dict:
@@ -892,6 +909,35 @@ class ReminderDB:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def cancel_recurring_series(self, reminder_id: int) -> tuple[bool, int]:
+        """Stop a recurring series and cancel all pending instances.
+        Returns (success, cancelled_count).
+
+        Recurring reminders form a chain: when one fires, send_due_reminders() creates
+        a new 'pending' child row with recurrence_parent_id pointing to the series root.
+        This method finds the root from any member (parent or child), clears
+        recurrence_pattern on the entire chain (preventing new children from being
+        spawned), and cancels all still-pending members in one go.
+
+        Needed because /cancel on a 'sent' recurring reminder previously just said
+        "already sent or cancelled" — users had no intuitive way to stop the whole series.
+        """
+        reminder = self.get_reminder(reminder_id)
+        if not reminder:
+            return False, 0
+        parent_id = reminder.get("recurrence_parent_id") or reminder["id"]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE reminders SET recurrence_pattern = NULL WHERE id = ? OR recurrence_parent_id = ?",
+                (parent_id, parent_id),
+            )
+            cursor = conn.execute(
+                "UPDATE reminders SET status = 'cancelled' WHERE status = 'pending' AND (id = ? OR recurrence_parent_id = ?)",
+                (parent_id, parent_id),
+            )
+            conn.commit()
+            return True, cursor.rowcount
 
     def set_recurrence(self, reminder_id: int, pattern: str = None, end_date: str = None, remaining: int = None) -> bool:
         """Set or update recurrence on a reminder. Pass pattern=None to turn off recurrence."""
@@ -1691,7 +1737,25 @@ class ReminderBot:
             elif self.db.cancel_reminder(rid):
                 results.append(f"[{rid}] cancelled")
             else:
-                results.append(f"[{rid}] already sent or cancelled")
+                # cancel_reminder() only works on 'pending' rows. If it returns False,
+                # this reminder is already 'sent' or 'cancelled'. For recurring reminders,
+                # the user likely wants to stop the whole series — not just this one instance.
+                # We detect recurring membership via recurrence_parent_id (child) or
+                # recurrence_pattern (root) and stop the entire series automatically.
+                parent_id = reminder.get("recurrence_parent_id") or (
+                    reminder["id"] if reminder.get("recurrence_pattern") else None
+                )
+                if parent_id:
+                    success, count = self.db.cancel_recurring_series(rid)
+                    if success:
+                        results.append(
+                            f"[{rid}] already sent — stopped recurring series. "
+                            f"{count} pending reminder(s) cancelled."
+                        )
+                    else:
+                        results.append(f"[{rid}] already sent or cancelled")
+                else:
+                    results.append(f"[{rid}] already sent or cancelled")
 
         await update.message.reply_text("\n".join(results))
 
@@ -2178,17 +2242,24 @@ class ReminderBot:
         if not self._can_access(user_id, reminder):
             await update.message.reply_text(f"Reminder [{reminder_id}] not accessible.")
             return
-        if not reminder.get("recurrence_pattern"):
+        # Accept both root IDs (have recurrence_pattern) and child IDs (have
+        # recurrence_parent_id) so users can stop a series using any member's ID —
+        # previously only worked if the ID still had recurrence_pattern set.
+        is_recurring = (
+            reminder.get("recurrence_pattern")
+            or reminder.get("recurrence_parent_id")
+        )
+        if not is_recurring:
             await update.message.reply_text(
                 f"Reminder [{reminder_id}] is not a recurring reminder."
             )
             return
 
-        if self.db.stop_recurrence(reminder_id):
+        success, count = self.db.cancel_recurring_series(reminder_id)
+        if success:
             await update.message.reply_text(
-                f"✓ Stopped recurring reminder [{reminder_id}].\n"
-                f"The current scheduled reminder will still fire, but no new ones will be created.\n\n"
-                f"Use /cancel {reminder_id} to also cancel the pending reminder."
+                f"✓ Stopped recurring series for [{reminder_id}].\n"
+                f"{count} pending reminder(s) cancelled."
             )
         else:
             await update.message.reply_text("Failed to stop recurrence.")
@@ -2711,7 +2782,18 @@ class ReminderBot:
             return
 
         # Default: CREATE action
-        task = result.get("task", user_input)
+        # The LLM returns either "task" (single string) or "tasks" (array) when the user
+        # sends a numbered/bulleted list. We normalize both into task_list so the creation
+        # loop below handles one-or-many uniformly. Falls back to raw user_input if the
+        # LLM returned neither (e.g. older LLM provider without tasks support).
+        task = result.get("task")
+        tasks = result.get("tasks")
+        if tasks and isinstance(tasks, list):
+            task_list = [str(t).strip() for t in tasks if t and str(t).strip()]
+            if not task_list:
+                task_list = [task or user_input]
+        else:
+            task_list = [task or user_input]
         category = result.get("category", "general")
         scheduled_time_str = result.get("scheduled_time")
         time_confidence = result.get("time_confidence")
@@ -2784,12 +2866,19 @@ class ReminderBot:
             notes.append("💡 Wrong? Reply /settime DD/MM[/YY] HH:MM or HHam/pm")
         correction_note = "\n" + "\n".join(notes) if notes else ""
 
+        multi_task = len(task_list) > 1
+        if multi_task:
+            tasks_display = "\n".join(f"  {i+1}. '{t}'" for i, t in enumerate(task_list))
+        else:
+            tasks_display = f"'{task_list[0]}'"
+
         if isinstance(final_times, list):
-            # Multiple reminders (e.g., food expiry)
+            # Multiple reminders (e.g., food expiry) — cross-product with task_list
             ids = []
             for t in final_times:
-                rid = self.db.add_reminder(task, category, t, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence, recurrence_end_date=recurrence_end_date, recurrence_remaining=recurrence_count)
-                ids.append(rid)
+                for tk in task_list:
+                    rid = self.db.add_reminder(tk, category, t, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence, recurrence_end_date=recurrence_end_date, recurrence_remaining=recurrence_count)
+                    ids.append(rid)
 
             times_str = "\n".join(
                 f"  • {t.strftime('%a %d %b, %H:%M')}" for t in final_times
@@ -2798,24 +2887,28 @@ class ReminderBot:
             recurrence_note = self._format_recurrence_confirmation(recurrence, recurrence_count, recurrence_end_date)
             await update.message.reply_text(
                 f"Got it! I'll remind {notify_text}:\n"
-                f"'{task}'{shared_note}\n\n"
+                f"{tasks_display}{shared_note}\n\n"
                 f"Scheduled times:\n{times_str}\n\n"
                 f"Category: {category}{recurrence_note}\n"
                 f"IDs: {ids}{correction_note}"
             )
         else:
-            # Single reminder
-            reminder_id = self.db.add_reminder(task, category, final_times, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence, recurrence_end_date=recurrence_end_date, recurrence_remaining=recurrence_count)
+            # Single time — one reminder per task in task_list
+            ids = []
+            for tk in task_list:
+                rid = self.db.add_reminder(tk, category, final_times, user_id, notify_all=shared, time_confidence=time_confidence, recurrence_pattern=recurrence, recurrence_end_date=recurrence_end_date, recurrence_remaining=recurrence_count)
+                ids.append(rid)
             time_str = final_times.strftime("%A %d %B, %H:%M")
             shared_note = " 👥 (shared)" if shared else ""
             recurrence_note = self._format_recurrence_confirmation(recurrence, recurrence_count, recurrence_end_date)
 
+            id_line = f"IDs: {ids}" if multi_task else f"ID: [{ids[0]}]"
             await update.message.reply_text(
                 f"Got it! I'll remind {notify_text}:\n"
-                f"'{task}'{shared_note}\n\n"
+                f"{tasks_display}{shared_note}\n\n"
                 f"Scheduled: {time_str}\n"
                 f"Category: {category}{recurrence_note}\n"
-                f"ID: [{reminder_id}]{correction_note}"
+                f"{id_line}{correction_note}"
             )
 
     async def handle_button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2854,6 +2947,61 @@ class ReminderBot:
                     f"Could not snooze reminder [{reminder_id}] - it may have been cancelled.",
                     parse_mode="HTML",
                 )
+
+        elif action == "snoozerel" and len(parts) >= 3:
+            # Snooze relative to the reminder's original scheduled_time, not the
+            # current time. E.g. a 9am reminder tapped at 3pm with "+1d" reschedules
+            # to 9am tomorrow, preserving the original time slot. If original+N is
+            # already in the past (reminder was overdue by more than N days), falls
+            # back to now+N as a safety net.
+            days = int(parts[1])
+            reminder_id = int(parts[2])
+            reminder = self.db.get_reminder(reminder_id)
+            if not reminder:
+                await query.edit_message_text("Reminder not found.", parse_mode="HTML")
+                return
+            orig_time = datetime.fromisoformat(reminder["scheduled_time"])
+            if orig_time.tzinfo is None:
+                orig_time = orig_time.replace(tzinfo=self.tz)
+            new_time = orig_time + timedelta(days=days)
+            if new_time <= self._now():
+                new_time = self._now() + timedelta(days=days)
+            if self.db.snooze_reminder(reminder_id, new_time) or self.db.delay_reminder(reminder_id, new_time):
+                label = f"+{days}d" if days < 7 else f"+{days // 7}w"
+                await query.edit_message_text(
+                    f"⏰ <b>Snoozed {label}</b> from original time\n\n"
+                    f"New time: {new_time.strftime('%a %d %b, %H:%M')}\n\n"
+                    f"<i>(ID: {reminder_id})</i>",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.edit_message_text(
+                    f"Could not snooze reminder [{reminder_id}] - it may have been cancelled.",
+                    parse_mode="HTML",
+                )
+
+        elif action == "stopseries" and len(parts) >= 2:
+            # Handles the "🛑 Stop" inline button shown on recurring reminder
+            # notifications. Stops the entire recurring series (clears recurrence_pattern
+            # on all members and cancels all pending instances) so the user doesn't have
+            # to hunt for the next pending child's ID to cancel individually.
+            reminder_id = int(parts[1])
+            reminder = self.db.get_reminder(reminder_id)
+            if not reminder:
+                await query.edit_message_text("Reminder not found.", parse_mode="HTML")
+                return
+            task_text = reminder.get("task", "reminder")
+            success, count = self.db.cancel_recurring_series(reminder_id)
+            if success:
+                await query.edit_message_text(
+                    f"🛑 <b>Recurring series stopped</b>\n\n"
+                    f"📌 {task_text}\n\n"
+                    f"{count} pending reminder(s) cancelled.\n"
+                    f"<i>(ID: {reminder_id})</i>",
+                    parse_mode="HTML",
+                )
+            else:
+                await query.edit_message_text("Failed to stop recurring series.", parse_mode="HTML")
 
         elif action == "done" and len(parts) >= 2:
             # done_123
@@ -2898,17 +3046,27 @@ class ReminderBot:
                     f"(ID: {reminder_id})"
                 )
 
-                # Inline keyboard buttons for quick actions
+                # Inline keyboard buttons for quick actions.
+                # "1h"/"1d" snooze from current time (good for "not now" deferral).
+                # "+1d"/"+1w" snooze from original scheduled_time (good for "same time
+                # tomorrow/next week" — e.g. a 9am reminder tapped at 3pm reschedules
+                # to 9am next day, not 3pm). Falls back to now+N if original+N is past.
+                # "Stop" only shown for recurring reminders to stop the whole series.
                 keyboard = [
                     [
-                        InlineKeyboardButton("⏰ 15m", callback_data=f"snooze_15_{reminder_id}"),
                         InlineKeyboardButton("⏰ 1h", callback_data=f"snooze_60_{reminder_id}"),
                         InlineKeyboardButton("⏰ 1d", callback_data=f"snooze_1440_{reminder_id}"),
+                        InlineKeyboardButton("⏰ +1d", callback_data=f"snoozerel_1_{reminder_id}"),
+                        InlineKeyboardButton("⏰ +1w", callback_data=f"snoozerel_7_{reminder_id}"),
                     ],
                     [
                         InlineKeyboardButton("✓ Done", callback_data=f"done_{reminder_id}"),
                     ],
                 ]
+                if reminder.get("recurrence_pattern"):
+                    keyboard[1].append(
+                        InlineKeyboardButton("🛑 Stop", callback_data=f"stopseries_{reminder_id}")
+                    )
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 for user_id in recipients:

@@ -6,6 +6,8 @@ A simple, privacy-conscious reminder system that works via Telegram.
 
 **Features:**
 - Natural language input ("remind me to pay bills tomorrow")
+- Multi-task lists ("10pm: 1. Buy milk 2. Call mom" → separate reminders)
+- Recurring reminders (daily, weekly, monthly, etc.) with inline Stop button
 - Smart defaults by category (bills → Saturday, food expiry → day before)
 - Multi-user support (you + partner)
 - Management commands (/list, /cancel, /delay)
@@ -303,7 +305,7 @@ You can limit recurrence with a count or end date:
 
 Use `/setrecurrence` to convert an existing reminder to recurring, change cadence, or set/remove end constraints.
 
-Recurring reminders show a 🔄 icon and automatically schedule the next occurrence when sent.
+Recurring reminders show a 🔄 icon and automatically schedule the next occurrence when sent. When a recurring reminder fires, you can tap 🛑 **Stop** to stop the entire series, or reply `/cancel` to the notification.
 
 ### Managing Reminders (Natural Language)
 
@@ -322,7 +324,7 @@ You can modify reminders by talking naturally:
 | `/help` | Show help |
 | `/list` | Show all pending reminders |
 | `/recurring` | Show recurring reminders |
-| `/stoprecurring <id>` | Stop a recurring reminder |
+| `/stoprecurring <id>` | Stop a recurring reminder series (accepts any ID in the series) |
 | `/setrecurrence <id> <pattern> [N times] [until <date>]` | Set or change recurrence on a reminder |
 | `/cancel <id>` | Cancel a reminder |
 | `/delay <id> <hours>` | Delay a reminder by X hours |

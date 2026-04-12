@@ -46,7 +46,10 @@ def db():
     os.close(fd)
     database = ReminderDB(db_path=path)
     yield database
-    os.unlink(path)
+    try:
+        os.unlink(path)
+    except PermissionError:
+        pass
 
 
 # ─── 1. Schema Migration ───────────────────────────────────────────────────
