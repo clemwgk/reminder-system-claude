@@ -186,8 +186,8 @@ llm:
   provider: "gemini"
   gemini:
     api_key: "YOUR_GEMINI_API_KEY"  # From Step 3
-    model: "gemini-3.1-flash-lite-preview"  # Free tier
-    fallback_model: "gemini-2.5-flash"  # Fallback if preview model fails
+    model: "gemini-3.1-flash-lite"  # Free tier (GA)
+    fallback_model: "gemini-2.5-flash"  # Fallback if primary model fails
 ```
 
 > **Alternative LLM Providers:** If Gemini doesn't work, you can use OpenAI (`gpt-4o-mini`, ~$0.15/1M tokens) or Groq (`llama-3.3-70b-versatile`, free 14,400 req/day). See `config.example.yaml` for all options.
@@ -480,7 +480,7 @@ Google's free tier VMs can occasionally be preempted. Check:
 | Item | Cost |
 |------|------|
 | Google Cloud | $0 (Always Free e2-micro in us-west1/us-central1/us-east1) |
-| Gemini API (gemini-3.1-flash-lite-preview) | $0 (Free tier) |
+| Gemini API (gemini-3.1-flash-lite) | $0 (Free tier) |
 | Telegram | $0 |
 | **Total** | **$0/month** |
 

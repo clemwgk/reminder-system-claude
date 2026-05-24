@@ -278,7 +278,7 @@ Example responses:
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
 
-    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite-preview", fallback_model: str = None):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-lite", fallback_model: str = None):
         self.api_key = api_key
         self.model = model
         self.fallback_model = fallback_model
