@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.1] - 2026-05-24
+
+### Changed
+- Default Gemini model updated from `gemini-3.1-flash-lite-preview` to `gemini-3.1-flash-lite` ahead of the preview model's discontinuation on May 25, 2026. The GA model is architecturally identical; no prompt or logic changes were required.
+
 ## [1.7.0] - 2026-04-12
 
 ### Added
