@@ -1080,12 +1080,11 @@ class InventoryChecker:
         self.gc = None
         if self.enabled:
             import gspread
-            import google.auth
-            from google.auth.transport.requests import AuthorizedSession
+            from google.oauth2.service_account import Credentials
+            sa_path = Path(inv_config.get("service_account_json", "inventory-sa.json"))
             scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-            creds, _ = google.auth.default(scopes=scopes)
-            self.gc = gspread.Client(auth=creds)
-            self.gc.session = AuthorizedSession(creds)
+            creds = Credentials.from_service_account_file(str(sa_path), scopes=scopes)
+            self.gc = gspread.authorize(creds)
 
     def find_low(self) -> list[dict]:
         if not self.enabled or not self.gc:

@@ -81,4 +81,5 @@ inventory:
   enabled: false              # Set to true after sheet is set up
   sheet_id: ""                # The ID from the sheet URL: docs.google.com/spreadsheets/d/{THIS_PART}/edit
   worksheet: "Inventory"      # Worksheet tab name
+  service_account_json: "inventory-sa.json"  # Path to GCP service account JSON key
   check_time: "08:30"         # Daily check time (Asia/Singapore)

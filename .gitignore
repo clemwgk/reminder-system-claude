@@ -1,6 +1,9 @@
 # Config with secrets (NEVER commit this)
 config.yaml
 
+# Service account key
+inventory-sa.json
+
 # Database
 *.db
 
