@@ -1059,6 +1059,115 @@ class ScheduleResolver:
 
 
 # =============================================================================
+# INVENTORY CHECKER (Google Sheets → low-stock alerts)
+# =============================================================================
+
+class InventoryChecker:
+    """Reads a Google Sheet and finds items that need restocking."""
+
+    SEARCH_URLS = {
+        "Shopee": "https://shopee.sg/search?keyword={}",
+        "FairPrice": "https://www.fairprice.com.sg/search?query={}",
+    }
+
+    def __init__(self, config: dict, tz: ZoneInfo):
+        self.tz = tz
+        inv_config = config.get("inventory", {})
+        self.enabled = inv_config.get("enabled", False)
+        self.sheet_id = inv_config.get("sheet_id", "")
+        self.worksheet_name = inv_config.get("worksheet", "Inventory")
+
+        self.gc = None
+        if self.enabled:
+            import gspread
+            import google.auth
+            from google.auth.transport.requests import AuthorizedSession
+            scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+            creds, _ = google.auth.default(scopes=scopes)
+            self.gc = gspread.Client(auth=creds)
+            self.gc.session = AuthorizedSession(creds)
+
+    def find_low(self) -> list[dict]:
+        if not self.enabled or not self.gc:
+            return []
+
+        sheet = self.gc.open_by_key(self.sheet_id).worksheet(self.worksheet_name)
+        rows = sheet.get_all_records()
+        today = datetime.now(self.tz).date()
+        alerts = []
+
+        for row in rows:
+            item_name = str(row.get("item", "")).strip()
+            if not item_name:
+                continue
+
+            qty = row.get("qty")
+            min_qty = row.get("min_qty")
+            max_days = row.get("max_days")
+            last_restocked = str(row.get("last_restocked", "")).strip()
+            source = str(row.get("source", "Other")).strip()
+            link = str(row.get("link", "")).strip()
+
+            reasons = []
+
+            if min_qty not in (None, "") and qty not in (None, ""):
+                try:
+                    if int(qty) <= int(min_qty):
+                        reasons.append(f"low qty ({qty} <= {min_qty})")
+                except (ValueError, TypeError):
+                    pass
+
+            if max_days not in (None, "") and last_restocked:
+                try:
+                    restocked_date = datetime.strptime(last_restocked, "%Y-%m-%d").date()
+                    days_since = (today - restocked_date).days
+                    if days_since > int(max_days):
+                        reasons.append(f"overdue ({days_since} > {max_days} days)")
+                except (ValueError, TypeError):
+                    pass
+
+            if reasons:
+                if not link:
+                    from urllib.parse import quote_plus
+                    url_template = self.SEARCH_URLS.get(source)
+                    if url_template:
+                        link = url_template.format(quote_plus(item_name))
+
+                alerts.append({
+                    "item": item_name,
+                    "qty": qty,
+                    "min_qty": min_qty,
+                    "max_days": max_days,
+                    "last_restocked": last_restocked,
+                    "source": source,
+                    "link": link,
+                    "reasons": reasons,
+                })
+
+        return alerts
+
+    def format_alert_message(self, alerts: list[dict]) -> str:
+        if not alerts:
+            return ""
+
+        lines = [
+            "━━━━━━━━━━━━━━━",
+            "📦 <b>Inventory Alert</b>",
+            "━━━━━━━━━━━━━━━",
+            "",
+        ]
+
+        for a in alerts:
+            reason_str = ", ".join(a["reasons"])
+            lines.append(f"• <b>{a['item']}</b> — {reason_str}")
+            if a["link"]:
+                lines.append(f'  <a href="{a["link"]}">Reorder on {a["source"]}</a>')
+            lines.append("")
+
+        return "\n".join(lines)
+
+
+# =============================================================================
 # TELEGRAM BOT
 # =============================================================================
 
@@ -1072,6 +1181,7 @@ class ReminderBot:
         self.db = ReminderDB(config.get("database", {}).get("path", "reminders.db"))
         self.llm = create_llm_provider(config)
         self.scheduler = ScheduleResolver(config, self.tz)
+        self.inventory = InventoryChecker(config, self.tz)
 
         # Set up logging
         logging.basicConfig(
@@ -3223,6 +3333,52 @@ class ReminderBot:
             except Exception as e:
                 self.logger.error(f"Failed to send daily summary to {user_id}: {e}")
 
+    async def send_inventory_alerts(self, app: Application):
+        """Check inventory and send alerts if any items are low. Called by scheduler."""
+        if not self.inventory.enabled:
+            return
+        try:
+            alerts = self.inventory.find_low()
+            if not alerts:
+                self.logger.info("Inventory check: all items OK")
+                return
+
+            message = self.inventory.format_alert_message(alerts)
+            for user_id in self.authorized_users:
+                try:
+                    await app.bot.send_message(
+                        chat_id=user_id,
+                        text=message,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to send inventory alert to {user_id}: {e}")
+            self.logger.info(f"Sent inventory alert ({len(alerts)} items) to all users")
+        except Exception as e:
+            self.logger.error(f"Inventory check failed: {e}")
+
+    async def inventory_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /inventory command - check stock levels on demand."""
+        user_id = update.effective_user.id
+        if not self._is_authorized(user_id):
+            return
+
+        if not self.inventory.enabled:
+            await update.message.reply_text("Inventory tracking is not configured.")
+            return
+
+        try:
+            alerts = self.inventory.find_low()
+        except Exception as e:
+            await update.message.reply_text(f"Failed to check inventory: {e}")
+            return
+        if alerts:
+            message = self.inventory.format_alert_message(alerts)
+        else:
+            message = "✅ All inventory items are above threshold."
+        await update.message.reply_text(message, parse_mode="HTML", disable_web_page_preview=True)
+
     def run(self):
         """Start the bot."""
         app = Application.builder().token(self.config["telegram"]["bot_token"]).build()
@@ -3243,6 +3399,7 @@ class ReminderBot:
         app.add_handler(CommandHandler("stoprecurring", self.stop_recurring))
         app.add_handler(CommandHandler("setrecurrence", self.set_recurrence_command))
         app.add_handler(CommandHandler("changelog", self.changelog_command))
+        app.add_handler(CommandHandler("inventory", self.inventory_command))
         app.add_handler(CallbackQueryHandler(self.handle_button_callback))
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
@@ -3270,6 +3427,21 @@ class ReminderBot:
                 self.logger.info(f"Daily summary scheduled at {summary_time_str}")
             except ValueError:
                 self.logger.error(f"Invalid daily_summary time format: {summary_time_str}")
+
+        # Set up inventory check job
+        inv_config = self.config.get("inventory", {})
+        if inv_config.get("enabled", False):
+            inv_time_str = inv_config.get("check_time", "08:30")
+            try:
+                hour, minute = map(int, inv_time_str.split(":"))
+                inv_time = time(hour=hour, minute=minute, tzinfo=self.tz)
+                job_queue.run_daily(
+                    lambda ctx: asyncio.create_task(self.send_inventory_alerts(app)),
+                    time=inv_time,
+                )
+                self.logger.info(f"Inventory check scheduled at {inv_time_str}")
+            except ValueError:
+                self.logger.error(f"Invalid inventory check_time format: {inv_time_str}")
 
         self.logger.info("Bot started. Press Ctrl+C to stop.")
         app.run_polling(allowed_updates=Update.ALL_TYPES)
