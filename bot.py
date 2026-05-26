@@ -1067,7 +1067,7 @@ class InventoryChecker:
 
     SEARCH_URLS = {
         "Shopee": "https://shopee.sg/search?keyword={}",
-        "FairPrice": "https://www.fairprice.com.sg/search?query={}",
+        "NTUC": "https://www.fairprice.com.sg/search?query={}",
     }
 
     def __init__(self, config: dict, tz: ZoneInfo):
@@ -1106,6 +1106,7 @@ class InventoryChecker:
             last_restocked = str(row.get("last_restocked", "")).strip()
             source = str(row.get("source", "Other")).strip()
             link = str(row.get("link", "")).strip()
+            search_term = str(row.get("search_term", "")).strip()
 
             reasons = []
 
@@ -1130,7 +1131,7 @@ class InventoryChecker:
                     from urllib.parse import quote_plus
                     url_template = self.SEARCH_URLS.get(source)
                     if url_template:
-                        link = url_template.format(quote_plus(item_name))
+                        link = url_template.format(quote_plus(search_term or item_name))
 
                 alerts.append({
                     "item": item_name,
