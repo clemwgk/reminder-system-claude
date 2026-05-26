@@ -1157,7 +1157,7 @@ class InventoryChecker:
         ]
 
         for a in alerts:
-            reason_str = ", ".join(a["reasons"])
+            reason_str = ", ".join(a["reasons"]).replace("<", "&lt;").replace(">", "&gt;")
             lines.append(f"• <b>{a['item']}</b> — {reason_str}")
             if a["link"]:
                 lines.append(f'  <a href="{a["link"]}">Reorder on {a["source"]}</a>')
