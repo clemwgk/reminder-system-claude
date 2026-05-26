@@ -3358,6 +3358,35 @@ class ReminderBot:
         except Exception as e:
             self.logger.error(f"Inventory check failed: {e}")
 
+    INVENTORY_HELP = (
+        "━━━━━━━━━━━━━━━\n"
+        "📦 <b>Inventory Help</b>\n"
+        "━━━━━━━━━━━━━━━\n"
+        "\n"
+        "<b>Commands</b>\n"
+        "/inventory — check stock levels now\n"
+        "/inventory help — this message\n"
+        "\n"
+        "<b>How alerts work</b>\n"
+        "The bot checks daily at 8:30am. An item triggers an alert if:\n"
+        "• qty &lt;= min_qty (low stock)\n"
+        "• days since last restock &gt; max_days (overdue)\n"
+        "Both can fire at the same time.\n"
+        "\n"
+        "<b>Reorder links</b>\n"
+        "Each alert includes a reorder link. By default this is an auto-generated\n"
+        "Shopee or NTUC search. To use a specific URL instead (e.g. a past Shopee\n"
+        "listing), paste it in the <b>link</b> column of the Google Sheet.\n"
+        "\n"
+        "<b>Web app</b>\n"
+        "Use +/- buttons to adjust qty. Tapping + also updates the last restocked date.\n"
+        "Use the Add Item form to add new items.\n"
+        "\n"
+        "<b>Sheet columns</b>\n"
+        "item, qty, min_qty, max_days, last_restocked, source, link, search_term\n"
+        "See the README tab in the sheet for full details."
+    )
+
     async def inventory_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /inventory command - check stock levels on demand."""
         user_id = update.effective_user.id
@@ -3366,6 +3395,10 @@ class ReminderBot:
 
         if not self.inventory.enabled:
             await update.message.reply_text("Inventory tracking is not configured.")
+            return
+
+        if context.args and context.args[0].lower() == "help":
+            await update.message.reply_text(self.INVENTORY_HELP, parse_mode="HTML")
             return
 
         try:
