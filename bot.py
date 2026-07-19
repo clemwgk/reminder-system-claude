@@ -131,6 +131,12 @@ TASK CONTENT PRESERVATION (added because the LLM was stripping ALL time referenc
 - Example: "remind me at 9am to call mom at 3pm" → scheduled_time = 09:00, task = "call mom at 3pm"
 - If the whole message is a single task with one time (e.g. "call mom at 3pm"), the time is both the schedule AND the only content — the task can drop it to just "call mom".
 
+MULTI-LINE CONTENT PRESERVATION (added for issue #7 because the LLM dropped lines that came after a line break — e.g. a task line followed by URLs on their own lines lost the URLs entirely):
+- If the message spans multiple lines, lines after the scheduling line are CONTENT (links, notes, details) and must be included in the task text, preserving line breaks.
+- URLs must ALWAYS be copied verbatim into the task text. Never drop or rewrite a URL.
+- Only split lines into the "tasks" array when they are clearly numbered/bulleted separate to-dos.
+- Example: "tmr: read these two posts\nhttps://x.com/abc\nhttps://x.com/def" → task = "read these two posts\nhttps://x.com/abc\nhttps://x.com/def"
+
 TARGET IDENTIFICATION:
 - If user says "the last one", "that one", "that reminder", "the previous one" → use the most recent reminder ID from context
 - If user gives an ID number (e.g., "reminder 5", "cancel 3") → use that ID
@@ -1280,6 +1286,26 @@ class ReminderBot:
 
     # Time pattern for validation (matches 11am, 3pm, 6:30pm, 855am, 1030pm, etc.)
     TIME_PATTERN = re.compile(r'\b(\d{1,4})(?::(\d{2}))?\s*(am|pm)\b', re.IGNORECASE)
+
+    # URLs for the issue #7 safety net. \S+ then rstrip of trailing punctuation,
+    # because "read https://x.com/abc." captures the trailing dot, which would
+    # fail the substring check against a correctly-preserved URL and cause a
+    # duplicate append.
+    URL_PATTERN = re.compile(r'https?://\S+')
+
+    @staticmethod
+    def _restore_dropped_urls(user_input: str, task_list: list[str]) -> list[str]:
+        """Deterministic backstop for issue #7: the LLM sometimes drops lines/URLs
+        that follow a line break in the user's message. Any URL present in the raw
+        input but missing from every parsed task is re-appended to the last task.
+        At-least-once semantics: if the LLM rewrote a URL, we may append a near-
+        duplicate — acceptable, since losing the URL is worse."""
+        urls = [u.rstrip('.,;:!?)') for u in ReminderBot.URL_PATTERN.findall(user_input)]
+        missing = [u for u in urls if u and not any(u in t for t in task_list)]
+        if missing:
+            task_list = list(task_list)
+            task_list[-1] = task_list[-1] + "\n" + "\n".join(missing)
+        return task_list
 
     def _get_words_to_check(self, user_input: str) -> list[str]:
         """Get the words to check for day names (limited scope to avoid false positives).
@@ -2904,6 +2930,7 @@ class ReminderBot:
                 task_list = [task or user_input]
         else:
             task_list = [task or user_input]
+        task_list = self._restore_dropped_urls(user_input, task_list)
         category = result.get("category", "general")
         scheduled_time_str = result.get("scheduled_time")
         time_confidence = result.get("time_confidence")

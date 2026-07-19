@@ -33,7 +33,7 @@ telegram_ext_mock.filters = MagicMock
 sys.modules["telegram"] = telegram_mock
 sys.modules["telegram.ext"] = telegram_ext_mock
 
-from bot import ReminderDB  # noqa: E402
+from bot import ReminderBot, ReminderDB  # noqa: E402
 
 TZ = ZoneInfo("Asia/Singapore")
 
@@ -325,3 +325,43 @@ class TestSnoozeRelativeTime:
         now = datetime(2026, 4, 10, 15, 0, tzinfo=TZ)
         result = self._calc_snooze_time("2026-04-10T09:00:00+08:00", 1, now, TZ)
         assert result == datetime(2026, 4, 11, 9, 0, tzinfo=TZ)
+
+
+# ─── Fix 3 (issue #7): _restore_dropped_urls ─────────────────────────────────
+
+class TestRestoreDroppedUrls:
+    def test_missing_url_is_appended(self):
+        """URL present in raw input but absent from the task gets appended."""
+        user_input = "tmr: read this\nhttps://x.com/abc"
+        task_list = ["read this"]
+        result = ReminderBot._restore_dropped_urls(user_input, task_list)
+        assert result == ["read this\nhttps://x.com/abc"]
+
+    def test_url_already_present_unchanged(self):
+        """If the LLM already preserved the URL, the list is untouched."""
+        user_input = "tmr: read this\nhttps://x.com/abc"
+        task_list = ["read this\nhttps://x.com/abc"]
+        result = ReminderBot._restore_dropped_urls(user_input, task_list)
+        assert result == task_list
+
+    def test_two_missing_urls_both_appended_in_order(self):
+        """Multiple missing URLs are appended in the order they appear."""
+        user_input = "tmr: read these\nhttps://x.com/abc\nhttps://x.com/def"
+        task_list = ["read these"]
+        result = ReminderBot._restore_dropped_urls(user_input, task_list)
+        assert result == ["read these\nhttps://x.com/abc\nhttps://x.com/def"]
+
+    def test_no_urls_unchanged(self):
+        """No URLs in the raw input -> task_list returned unchanged."""
+        user_input = "call mom tomorrow at 3pm"
+        task_list = ["call mom at 3pm"]
+        result = ReminderBot._restore_dropped_urls(user_input, task_list)
+        assert result == task_list
+
+    def test_trailing_punctuation_not_reappended(self):
+        """Input URL with trailing period still matches a clean URL in the task
+        (rstrip of trailing punctuation avoids a spurious duplicate append)."""
+        user_input = "read https://x.com/abc."
+        task_list = ["read https://x.com/abc"]
+        result = ReminderBot._restore_dropped_urls(user_input, task_list)
+        assert result == task_list

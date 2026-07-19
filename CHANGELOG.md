@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0] - 2026-07-19
+
+### Fixed
+- **Multi-line content / URLs dropped from reminders (#7)**: The LLM prompt had no instruction about multi-line messages, so lines after a line break (e.g. links pasted below a task) were silently dropped. Added a MULTI-LINE CONTENT PRESERVATION prompt section plus a deterministic `_restore_dropped_urls` safety net that re-appends any URL present in the raw input but missing from the parsed task.
+
 ## [1.7.1] - 2026-05-24
 
 ### Changed
