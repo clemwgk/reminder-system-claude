@@ -10,6 +10,7 @@ Run with: python bot.py
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -2340,8 +2341,13 @@ class ReminderBot:
             time_str = scheduled.strftime("%a %d %b, %H:%M")
             shared_marker = " 👥" if r.get("notify_all", 0) else ""
             recurrence_info = self._format_recurrence_info(r)
+            # Escape wherever task text meets parse_mode=HTML (issue #8 follow-through:
+            # once we escape in send_due_reminders, every other HTML-rendered surface
+            # that echoes a task needs the same treatment or it's just moving the bug).
+            # Plain-text replies (no parse_mode) must stay unescaped or they'd show
+            # literal "&lt;" to the user.
             lines.append(
-                f"[{r['id']}] {r['task']}{shared_marker}\n"
+                f"[{r['id']}] {html.escape(r['task'])}{shared_marker}\n"
                 f"    📅 Next: {time_str}\n"
                 f"   {recurrence_info}"
             )
@@ -3132,7 +3138,7 @@ class ReminderBot:
             if success:
                 await query.edit_message_text(
                     f"🛑 <b>Recurring series stopped</b>\n\n"
-                    f"📌 {task_text}\n\n"
+                    f"📌 {html.escape(task_text)}\n\n"
                     f"{count} pending reminder(s) cancelled.\n"
                     f"<i>(ID: {reminder_id})</i>",
                     parse_mode="HTML",
@@ -3149,7 +3155,7 @@ class ReminderBot:
             # Mark as acknowledged in DB and update message
             self.db.acknowledge_reminder(reminder_id)
             await query.edit_message_text(
-                f"[✓ Done] {task_text}\n\n"
+                f"[✓ Done] {html.escape(task_text)}\n\n"
                 f"<i>(ID: {reminder_id})</i>",
                 parse_mode="HTML",
             )
@@ -3174,12 +3180,14 @@ class ReminderBot:
                 recurrence_note = " 🔄" if reminder.get("recurrence_pattern") else ""
                 reminder_id = reminder['id']
 
-                # Pop formatting with horizontal lines
+                # Task text goes on line 1 so the phone's push-notification preview
+                # shows what the reminder is about (issue #8 — the old layout led
+                # with decorative ━━━ lines and a generic header, giving zero signal
+                # in the preview). html.escape because parse_mode=HTML: a task like
+                # "buy <milk>" previously broke the send entirely.
                 message = (
+                    f"🔔 {html.escape(reminder['task'])}{shared_note}{recurrence_note}\n"
                     f"━━━━━━━━━━━━━━━\n"
-                    f"🔔 <b>Reminder</b>{shared_note}{recurrence_note}\n"
-                    f"━━━━━━━━━━━━━━━\n\n"
-                    f"📌 {reminder['task']}\n\n"
                     f"(ID: {reminder_id})"
                 )
 
@@ -3326,7 +3334,7 @@ class ReminderBot:
                 scheduled = datetime.fromisoformat(r["scheduled_time"])
                 time_str = scheduled.strftime("%H:%M")
                 shared_marker = " 👥" if r.get("notify_all", 0) else ""
-                lines.append(f"• {time_str} - {r['task']}{shared_marker} [ID: {r['id']}]")
+                lines.append(f"• {time_str} - {html.escape(r['task'])}{shared_marker} [ID: {r['id']}]")
             lines.append("")
         else:
             lines.append("📅 No reminders scheduled for today.\n")
@@ -3337,7 +3345,7 @@ class ReminderBot:
                 sent_at = datetime.fromisoformat(r["sent_at"]) if r.get("sent_at") else None
                 sent_str = sent_at.strftime("%a %H:%M") if sent_at else "unknown"
                 shared_marker = " 👥" if r.get("notify_all", 0) else ""
-                lines.append(f"• {r['task']}{shared_marker} [ID: {r['id']}] - sent {sent_str}")
+                lines.append(f"• {html.escape(r['task'])}{shared_marker} [ID: {r['id']}] - sent {sent_str}")
 
         return "\n".join(lines)
 

@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Multi-line content / URLs dropped from reminders (#7)**: The LLM prompt had no instruction about multi-line messages, so lines after a line break (e.g. links pasted below a task) were silently dropped. Added a MULTI-LINE CONTENT PRESERVATION prompt section plus a deterministic `_restore_dropped_urls` safety net that re-appends any URL present in the raw input but missing from the parsed task.
+- **Reminder push notifications showed no useful preview (#8)**: `send_due_reminders` used to lead with decorative `━━━` lines and a generic "🔔 Reminder" header, so the phone's notification preview showed zero signal about what the reminder was for. The task text now goes on line 1. Task text is now `html.escape`d everywhere it meets a `parse_mode="HTML"` send/edit (reminder notifications, done/stop-series button confirmations, `/recurring` list, `/summary`) so a task like "buy &lt;milk&gt;" no longer breaks the send.
 
 ## [1.7.1] - 2026-05-24
 

@@ -460,6 +460,7 @@ sudo journalctl -u reminder-bot -n 50
 - Verify your API key is correct
 - Check you haven't exceeded free tier limits (unlikely for personal use)
 - Make sure the key is enabled at [Google AI Studio](https://aistudio.google.com)
+- The bot now auto-retries transient overload errors (503/429) with a 2s/4s backoff, showing "AI service is busy — retrying" in Telegram while it does. If errors persist after retries, check your project's live rate limits in AI Studio.
 
 ### SSH Connection Issues
 If the browser-based SSH disconnects:
