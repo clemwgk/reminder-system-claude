@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [1.8.0] - 2026-07-19
 
+### Added
+- **Auto-retry for transient LLM failures (#9)**: 429/5xx errors ("model is overloaded", rate limits) are now retried with 2s/4s backoff instead of failing instantly, with a 15s per-request timeout so a hung request can't stall far longer than the retries themselves. The "Processing..." message live-updates to "⏳ AI service is busy — retrying (N/3)..." during backoff so the bot doesn't look dead. Error messages shown to the user are now human-readable (extracted from the API's JSON error body) instead of raw JSON dumps. `Application.builder()` now sets `.concurrent_updates(True)` so one user's retry backoff can no longer stall the other user's messages.
+- Investigated whether `gemini-3.1-flash-lite` had been deprecated or pulled from the free tier (issue #9) — it had not (still free tier as of Jul 2026, ~30 RPM / 1,500 RPD); errors were genuine transient overload, so retries rather than a model change.
+
 ### Fixed
 - **Multi-line content / URLs dropped from reminders (#7)**: The LLM prompt had no instruction about multi-line messages, so lines after a line break (e.g. links pasted below a task) were silently dropped. Added a MULTI-LINE CONTENT PRESERVATION prompt section plus a deterministic `_restore_dropped_urls` safety net that re-appends any URL present in the raw input but missing from the parsed task.
 - **Reminder push notifications showed no useful preview (#8)**: `send_due_reminders` used to lead with decorative `━━━` lines and a generic "🔔 Reminder" header, so the phone's notification preview showed zero signal about what the reminder was for. The task text now goes on line 1. Task text is now `html.escape`d everywhere it meets a `parse_mode="HTML"` send/edit (reminder notifications, done/stop-series button confirmations, `/recurring` list, `/summary`) so a task like "buy &lt;milk&gt;" no longer breaks the send.

@@ -33,7 +33,7 @@ telegram_ext_mock.filters = MagicMock
 sys.modules["telegram"] = telegram_mock
 sys.modules["telegram.ext"] = telegram_ext_mock
 
-from bot import ReminderBot, ReminderDB  # noqa: E402
+from bot import LLMProvider, ReminderBot, ReminderDB  # noqa: E402
 
 TZ = ZoneInfo("Asia/Singapore")
 
@@ -365,3 +365,47 @@ class TestRestoreDroppedUrls:
         task_list = ["read https://x.com/abc"]
         result = ReminderBot._restore_dropped_urls(user_input, task_list)
         assert result == task_list
+
+
+# ─── Fix 4 (issue #9): LLMProvider retry/error helpers ───────────────────────
+
+class TestFriendlyLlmError:
+    def test_google_style_503_overloaded(self):
+        """Google-style error body with status 503: message extracted, no braces,
+        retry hint included."""
+        body = (
+            '{"error": {"message": "The model is overloaded. Please try again '
+            'later.", "status": "UNAVAILABLE"}}'
+        )
+        msg = LLMProvider._friendly_llm_error(503, body)
+        assert "503" in msg
+        assert "The model is overloaded" in msg
+        assert "retrying in a minute" in msg.lower()
+        assert "{" not in msg
+
+    def test_401_mentions_api_key(self):
+        """Auth errors point the user at config.yaml regardless of body content."""
+        msg = LLMProvider._friendly_llm_error(401, '{"error": "invalid api key"}')
+        assert "API key" in msg
+
+    def test_non_json_body_status_500(self):
+        """Non-JSON body still produces a clean message with the status code."""
+        msg = LLMProvider._friendly_llm_error(500, "Internal Server Error - upstream timeout")
+        assert "500" in msg
+        assert "{" not in msg
+        assert "}" not in msg
+
+    def test_status_none_network_failure(self):
+        """status=None (pure network failure) uses the 'couldn't reach' phrasing."""
+        msg = LLMProvider._friendly_llm_error(None, "Connection refused")
+        assert "Couldn't reach" in msg
+
+
+class TestRetryableStatuses:
+    def test_retryable_statuses(self):
+        assert 503 in LLMProvider.RETRYABLE_STATUSES
+        assert 429 in LLMProvider.RETRYABLE_STATUSES
+
+    def test_non_retryable_statuses(self):
+        assert 400 not in LLMProvider.RETRYABLE_STATUSES
+        assert 401 not in LLMProvider.RETRYABLE_STATUSES

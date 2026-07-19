@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import yaml
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -60,7 +61,8 @@ class LLMProvider(ABC):
 
     @abstractmethod
     async def parse_reminder(
-        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None,
+        on_retry=None,
     ) -> dict:
         """
         Parse natural language reminder input.
@@ -74,6 +76,10 @@ class LLMProvider(ABC):
             - target_id: int or None (for cancel/modify - ID of reminder to act on)
             - shared: bool (True if "remind us" / notify all users)
             - error: str or None (if parsing failed)
+
+        on_retry: optional async callback(attempt_number, delay_seconds) invoked
+        before each retry backoff sleep (issue #9) — lets the caller update a
+        "Processing..." placeholder so the bot doesn't look dead during retries.
         """
         pass
 
@@ -281,6 +287,80 @@ Example responses:
 
         raise json.JSONDecodeError("No JSON object found", cleaned, 0)
 
+    # Issue #9: transient 429/5xx failures ("model is overloaded") previously
+    # surfaced instantly as raw JSON error dumps to the user. Retry with spacing
+    # instead; 429 also covers free-tier rate limits (~30 RPM), which usually
+    # clear within seconds (daily-quota 429s won't — retries are still bounded).
+    RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+    REQUEST_TIMEOUT = 15  # seconds; without this a hung request stalls far longer than any retry
+
+    async def _post_with_retry(self, session, url, payload, headers=None,
+                               max_retries=2, base_delay=2.0, on_retry=None):
+        """POST with retry on transient failures (429/5xx, network errors, timeouts).
+        Returns (status, data): parsed JSON dict on success, raw error text otherwise.
+        status is None for pure network failures. on_retry is an optional async
+        callback(attempt_number, delay_seconds) invoked before each backoff sleep —
+        used to update the user's "Processing..." placeholder in Telegram."""
+        status, data = None, ""
+        for attempt in range(max_retries + 1):
+            try:
+                async with session.post(
+                    url, json=payload, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.REQUEST_TIMEOUT),
+                ) as resp:
+                    if resp.status == 200:
+                        return 200, await resp.json()
+                    status = resp.status
+                    data = await resp.text()
+                    if status not in self.RETRYABLE_STATUSES:
+                        return status, data
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                status, data = None, str(e)
+
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"LLM request failed (status={status}), retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{max_retries})"
+                )
+                if on_retry:
+                    await on_retry(attempt + 1, delay)
+                await asyncio.sleep(delay)
+
+        return status, data
+
+    @staticmethod
+    def _friendly_llm_error(status, body: str) -> str:
+        """Turn an API error into a message safe to show a non-technical user
+        (issue #9: raw JSON error bodies looked scary). Extracts error.message
+        from Google/OpenAI-style JSON bodies, falls back to a trimmed snippet."""
+        detail = ""
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict):
+                err = parsed.get("error")
+                if isinstance(err, dict):
+                    detail = err.get("message") or ""
+                elif isinstance(err, str):
+                    detail = err
+        except Exception:
+            pass
+
+        if not detail:
+            detail = body.strip().replace("{", "").replace("}", "")[:200]
+
+        if status is None:
+            base = f"⚠️ Couldn't reach the AI service: {detail}"
+        else:
+            base = f"⚠️ AI service error {status}: {detail}"
+
+        if status in (429, 503):
+            base += "\n\nWorth retrying in a minute."
+        elif status in (401, 403):
+            base += "\n\nCheck the API key in config.yaml."
+
+        return base
+
 
 class GeminiProvider(LLMProvider):
     """Google Gemini API provider (free tier)."""
@@ -292,10 +372,9 @@ class GeminiProvider(LLMProvider):
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
     async def parse_reminder(
-        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None,
+        on_retry=None,
     ) -> dict:
-        import aiohttp
-
         prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
 
@@ -309,25 +388,27 @@ class GeminiProvider(LLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        # Try fallback model if available
-                        if self.fallback_model:
-                            logger.warning(
-                                f"Primary model {self.model} failed (HTTP {response.status}), "
-                                f"falling back to {self.fallback_model}"
-                            )
-                            fallback_url = f"{self.base_url}/models/{self.fallback_model}:generateContent?key={self.api_key}"
-                            async with session.post(fallback_url, json=payload) as fallback_response:
-                                if fallback_response.status != 200:
-                                    fallback_error = await fallback_response.text()
-                                    return {"error": f"Gemini API error (both models failed): {fallback_error}"}
-                                data = await fallback_response.json()
-                        else:
-                            return {"error": f"Gemini API error: {error_text}"}
-                    else:
-                        data = await response.json()
+                # Issue #9: retry the primary model before giving up on it (bounded
+                # at max_retries=2 -> up to 3 requests), THEN fall back to the
+                # secondary model with one retry of its own (up to 2 more requests).
+                # Worst case ~5 requests total before the user sees an error.
+                status, data = await self._post_with_retry(
+                    session, url, payload, max_retries=2, on_retry=on_retry
+                )
+
+                if status != 200 and self.fallback_model:
+                    logger.warning(
+                        f"Primary model {self.model} failed (status={status}), "
+                        f"falling back to {self.fallback_model}"
+                    )
+                    fallback_url = f"{self.base_url}/models/{self.fallback_model}:generateContent?key={self.api_key}"
+                    status, data = await self._post_with_retry(
+                        session, fallback_url, payload, max_retries=1, on_retry=on_retry
+                    )
+
+            if status != 200:
+                logger.warning(f"Gemini API error {status}: {data}")
+                return {"error": self._friendly_llm_error(status, data)}
 
             # Extract the text response
             text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -336,7 +417,8 @@ class GeminiProvider(LLMProvider):
             return result
 
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response: {e}"}
+            logger.warning(f"Gemini response was not valid JSON: {e}")
+            return {"error": "⚠️ The AI gave an unreadable response — please try rephrasing."}
         except Exception as e:
             return {"error": f"LLM request failed: {e}"}
 
@@ -349,10 +431,9 @@ class OllamaProvider(LLMProvider):
         self.model = model
 
     async def parse_reminder(
-        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None,
+        on_retry=None,
     ) -> dict:
-        import aiohttp
-
         prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.host}/api/generate"
 
@@ -365,12 +446,11 @@ class OllamaProvider(LLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {"error": f"Ollama API error: {error_text}"}
+                status, data = await self._post_with_retry(session, url, payload, on_retry=on_retry)
 
-                    data = await response.json()
+            if status != 200:
+                logger.warning(f"Ollama API error {status}: {data}")
+                return {"error": self._friendly_llm_error(status, data)}
 
             text = data.get("response", "").strip()
 
@@ -378,7 +458,8 @@ class OllamaProvider(LLMProvider):
             return result
 
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response: {e}"}
+            logger.warning(f"Ollama response was not valid JSON: {e}")
+            return {"error": "⚠️ The AI gave an unreadable response — please try rephrasing."}
         except Exception as e:
             return {"error": f"LLM request failed: {e}"}
 
@@ -392,10 +473,9 @@ class OpenAIProvider(LLMProvider):
         self.base_url = "https://api.openai.com/v1"
 
     async def parse_reminder(
-        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None,
+        on_retry=None,
     ) -> dict:
-        import aiohttp
-
         prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/chat/completions"
 
@@ -413,12 +493,13 @@ class OpenAIProvider(LLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {"error": f"OpenAI API error: {error_text}"}
+                status, data = await self._post_with_retry(
+                    session, url, payload, headers=headers, on_retry=on_retry
+                )
 
-                    data = await response.json()
+            if status != 200:
+                logger.warning(f"OpenAI API error {status}: {data}")
+                return {"error": self._friendly_llm_error(status, data)}
 
             # Extract the text response
             text = data["choices"][0]["message"]["content"].strip()
@@ -427,7 +508,8 @@ class OpenAIProvider(LLMProvider):
             return result
 
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response: {e}"}
+            logger.warning(f"OpenAI response was not valid JSON: {e}")
+            return {"error": "⚠️ The AI gave an unreadable response — please try rephrasing."}
         except Exception as e:
             return {"error": f"LLM request failed: {e}"}
 
@@ -441,10 +523,9 @@ class GroqProvider(LLMProvider):
         self.base_url = "https://api.groq.com/openai/v1"
 
     async def parse_reminder(
-        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None
+        self, user_input: str, current_time: datetime, recent_reminders: list[dict] = None,
+        on_retry=None,
     ) -> dict:
-        import aiohttp
-
         prompt = self._build_prompt(user_input, current_time, recent_reminders)
         url = f"{self.base_url}/chat/completions"
 
@@ -462,12 +543,13 @@ class GroqProvider(LLMProvider):
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        return {"error": f"Groq API error: {error_text}"}
+                status, data = await self._post_with_retry(
+                    session, url, payload, headers=headers, on_retry=on_retry
+                )
 
-                    data = await response.json()
+            if status != 200:
+                logger.warning(f"Groq API error {status}: {data}")
+                return {"error": self._friendly_llm_error(status, data)}
 
             # Extract the text response (OpenAI-compatible format)
             text = data["choices"][0]["message"]["content"].strip()
@@ -476,7 +558,8 @@ class GroqProvider(LLMProvider):
             return result
 
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse LLM response: {e}"}
+            logger.warning(f"Groq response was not valid JSON: {e}")
+            return {"error": "⚠️ The AI gave an unreadable response — please try rephrasing."}
         except Exception as e:
             return {"error": f"LLM request failed: {e}"}
 
@@ -2783,7 +2866,16 @@ class ReminderBot:
         # Parse with LLM (for more complex inputs)
         processing_msg = await update.message.reply_text("Processing...")
 
-        result = await self.llm.parse_reminder(user_input, current_time, recent_reminders)
+        async def _notify_retry(attempt, delay):
+            # Issue #9: without this the bot looks dead during retry backoff.
+            try:
+                await processing_msg.edit_text(f"⏳ AI service is busy — retrying ({attempt}/3)...")
+            except Exception:
+                pass
+
+        result = await self.llm.parse_reminder(
+            user_input, current_time, recent_reminders, on_retry=_notify_retry
+        )
 
         # Delete the "Processing..." message
         try:
@@ -2792,11 +2884,12 @@ class ReminderBot:
             pass  # Ignore if delete fails
 
         if "error" in result:
+            # Providers now return user-friendly strings (issue #9), so send it as-is
+            # instead of wrapping it in "Sorry, I couldn't understand that" / a raw
+            # error dump.
             await update.message.reply_text(
-                f"Sorry, I couldn't understand that.\n"
-                f"Error: {result['error']}\n\n"
-                f"Try being more specific, like:\n"
-                f"'remind me to call mom tomorrow at 3pm'"
+                f"{result['error']}\n\n"
+                f"You can resend your reminder, e.g. 'remind me to call mom tomorrow at 3pm'"
             )
             return
 
@@ -3449,7 +3542,17 @@ class ReminderBot:
 
     def run(self):
         """Start the bot."""
-        app = Application.builder().token(self.config["telegram"]["bot_token"]).build()
+        # concurrent_updates(True): retry backoff (issue #9) can hold a handler for
+        # ~15s (REQUEST_TIMEOUT * retries). Without concurrent updates, python-telegram-bot
+        # processes updates one at a time, so a slow LLM call from one user would stall
+        # the OTHER user's messages too. Handlers share no mutable in-memory state and
+        # SQLite transactions are short, so concurrent handling is safe.
+        app = (
+            Application.builder()
+            .token(self.config["telegram"]["bot_token"])
+            .concurrent_updates(True)
+            .build()
+        )
 
         # Add handlers
         app.add_handler(CommandHandler("start", self.start))
