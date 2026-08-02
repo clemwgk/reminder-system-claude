@@ -1182,7 +1182,6 @@ class InventoryChecker:
 
         sheet = self.gc.open_by_key(self.sheet_id).worksheet(self.worksheet_name)
         rows = sheet.get_all_records()
-        today = datetime.now(self.tz).date()
         alerts = []
 
         for row in rows:
@@ -1200,19 +1199,15 @@ class InventoryChecker:
 
             reasons = []
 
+            # Low qty is now the only alert trigger. The old duration rule (days since
+            # last_restocked > max_days) got dropped per issue #11 — it mostly fired on
+            # items that just hadn't been used yet, not ones that actually needed restocking.
+            # max_days and last_restocked are still read from the sheet and returned below
+            # for reference, they just don't decide whether an alert fires anymore.
             if min_qty not in (None, "") and qty not in (None, ""):
                 try:
                     if int(qty) <= int(min_qty):
                         reasons.append(f"low qty ({qty} <= {min_qty})")
-                except (ValueError, TypeError):
-                    pass
-
-            if max_days not in (None, "") and last_restocked:
-                try:
-                    restocked_date = datetime.strptime(last_restocked, "%Y-%m-%d").date()
-                    days_since = (today - restocked_date).days
-                    if days_since > int(max_days):
-                        reasons.append(f"overdue ({days_since} > {max_days} days)")
                 except (ValueError, TypeError):
                     pass
 
@@ -2624,6 +2619,8 @@ class ReminderBot:
         changelog = (
             "📋 Changelog\n"
             "────────────\n\n"
+            "v1.8.1 (Aug 2026)\n"
+            "• Inventory alerts no longer fire based on time since last restock\n\n"
             "v1.6.0 (Mar 2026)\n"
             "• 🔄 Recurring reminders! Use 'every day', 'weekly', etc.\n"
             "• /recurring - view your recurring reminders\n"
@@ -3498,8 +3495,8 @@ class ReminderBot:
         "<b>How alerts work</b>\n"
         "The bot checks daily at 8:30am. An item triggers an alert if:\n"
         "• qty &lt;= min_qty (low stock)\n"
-        "• days since last restock &gt; max_days (overdue)\n"
-        "Both can fire at the same time.\n"
+        "max_days and last_restocked are still recorded in the sheet for reference,\n"
+        "but no longer trigger alerts.\n"
         "\n"
         "<b>Reorder links</b>\n"
         "Each alert includes a reorder link. By default this is an auto-generated\n"
