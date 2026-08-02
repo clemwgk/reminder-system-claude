@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.1] - 2026-08-02
+
+### Changed
+- **Inventory alerts no longer trigger on elapsed time (#11)**: `InventoryChecker.find_low()` used to flag an item when either qty <= min_qty OR days since `last_restocked` exceeded `max_days`. The elapsed-time rule was mostly false positives — it fired on items that simply hadn't been used yet, not ones that actually needed restocking. `qty <= min_qty` is now the sole alert trigger. The `max_days` and `last_restocked` sheet columns are unchanged and still populated by the web app; they're informational only now and no longer influence alerting.
+
 ## [1.8.0] - 2026-07-19
 
 ### Added
